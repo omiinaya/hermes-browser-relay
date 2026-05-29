@@ -62,10 +62,23 @@ async def handle_extension(request):
                     continue
 
                 if msg_type == "event":
-                    # CDP event from Chrome (page loaded, frame updated, etc.)
+                    # CDP event from Chrome
                     method = data.get("method", "")
                     log.debug(f"CDP event: {method}")
                     # Forward to any event subscribers
+                    for cb in event_subscribers:
+                        try:
+                            cb(data)
+                        except Exception:
+                            pass
+                    continue
+                
+                if msg_type == "webrequest":
+                    # WebRequest event from Chrome (global, all tabs)
+                    url = data.get("url", "")
+                    evt = data.get("event", "")
+                    log.debug(f"WebRequest {evt}: {url[:100]}")
+                    # Forward to event subscribers
                     for cb in event_subscribers:
                         try:
                             cb(data)
