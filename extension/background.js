@@ -34,6 +34,58 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   updateBadge();
 });
 
+// ====== Global Web Request Capture (all tabs) ======
+
+function sendWebRequest(type, details) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  // Trim down to essential fields to avoid flooding
+  ws.send(JSON.stringify({
+    type: 'webrequest',
+    event: type,
+    tabId: details.tabId,
+    requestId: details.requestId,
+    url: details.url,
+    method: details.method || details.request?.method,
+    statusCode: details.statusCode,
+    statusLine: details.statusLine,
+    resourceType: details.type,
+    ip: details.ip,
+    timeStamp: details.timeStamp,
+    // Response headers (if available)
+    responseHeaders: details.responseHeaders ? details.responseHeaders.slice(0, 30) : undefined,
+    requestHeaders: details.requestHeaders ? details.requestHeaders.slice(0, 30) : undefined,
+  }));
+}
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => { sendWebRequest('beforeRequest', details); return; },
+  { urls: ['<all_urls>'] },
+  ['requestBody']
+);
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => { sendWebRequest('beforeSendHeaders', details); return; },
+  { urls: ['<all_urls>'] },
+  ['requestHeaders']
+);
+
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => { sendWebRequest('headersReceived', details); return; },
+  { urls: ['<all_urls>'] },
+  ['responseHeaders']
+);
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => { sendWebRequest('completed', details); return; },
+  { urls: ['<all_urls>'] },
+  ['responseHeaders']
+);
+
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => { sendWebRequest('error', details); return; },
+  { urls: ['<all_urls>'] }
+);
+
 // ====== Server URL ======
 
 function loadServerUrl() {
