@@ -1,7 +1,7 @@
 // CDP Bridge — Background Service Worker
 // Connects chrome.debugger to Hermes Agent via WebSocket
 
-const DEFAULT_SERVER = 'ws://127.0.0.1:9223/ws';
+const DEFAULT_SERVER = 'ws://192.168.1.200:9988';
 let SERVER_URL = DEFAULT_SERVER;
 let ws = null;
 let wsReconnectTimer = null;
@@ -359,6 +359,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
   }
   return false;
+});
+
+// ====== Downloads Capture ======
+
+chrome.downloads.onCreated.addListener((item) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'download',
+    event: 'created',
+    id: item.id,
+    url: item.url,
+    filename: item.filename,
+    totalBytes: item.totalBytes,
+    mime: item.mime,
+    danger: item.danger,
+  }));
+});
+
+chrome.downloads.onChanged.addListener((delta) => {
+  if (!delta.state) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'download',
+    event: 'changed',
+    id: delta.id,
+    state: delta.state.current,
+    filename: delta.filename?.current,
+    error: delta.error?.current,
+  }));
+});
+
+// ====== Tab Navigation ======
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (!tab.url || tab.url.startsWith('chrome')) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'tab',
+    event: 'navigated',
+    tabId: tabId,
+    url: tab.url,
+    title: tab.title,
+  }));
 });
 
 // ====== Init ======

@@ -7,6 +7,8 @@
     "debugger",
     "activeTab",
     "webRequest",
+    "downloads",
+    "tabs",
     "storage"
   ],
   "host_permissions": [
