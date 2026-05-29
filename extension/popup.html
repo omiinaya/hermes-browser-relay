@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 360px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      margin: 0;
+    }
+    
+    h1 {
+      margin: 0 0 16px 0;
+      font-size: 20px;
+      color: #4fc3f7;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    h1 span {
+      font-size: 12px;
+      color: #666;
+      background: #16213e;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    
+    .section {
+      background: #16213e;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    
+    .section-title {
+      font-size: 12px;
+      color: #4fc3f7;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    
+    .dot.green { background: #4caf50; box-shadow: 0 0 6px #4caf5066; }
+    .dot.blue { background: #2196f3; box-shadow: 0 0 6px #2196f366; }
+    .dot.yellow { background: #ff9800; }
+    .dot.gray { background: #555; }
+    .dot.red { background: #f44336; }
+    
+    .status-label {
+      font-size: 13px;
+      flex: 1;
+    }
+    
+    .tab-id {
+      font-size: 11px;
+      color: #888;
+      font-family: monospace;
+    }
+    
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px 16px;
+      margin-bottom: 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    
+    .btn:active { transform: scale(0.97); }
+    
+    .btn-primary {
+      background: #4fc3f7;
+      color: #0f0f1a;
+    }
+    .btn-primary:hover { background: #29b6f6; }
+    .btn-primary:disabled { background: #2a2a3e; color: #555; cursor: not-allowed; }
+    
+    .btn-danger {
+      background: #f44336;
+      color: #fff;
+    }
+    .btn-danger:hover { background: #e53935; }
+    .btn-danger:disabled { background: #2a2a3e; color: #555; cursor: not-allowed; }
+    
+    .btn-outline {
+      background: transparent;
+      border: 1px solid #4fc3f733;
+      color: #4fc3f7;
+    }
+    .btn-outline:hover { background: #4fc3f711; }
+    
+    .btn-row {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-row .btn { margin-bottom: 0; }
+    
+    .help {
+      margin-top: 12px;
+      padding: 10px;
+      background: #0f0f1a;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #666;
+      line-height: 1.5;
+    }
+    
+    .help code {
+      color: #4fc3f7;
+      background: #1a1a2e;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>CDP Bridge <span>v1</span></h1>
+  
+  <!-- Connection -->
+  <div class="section">
+    <div class="section-title">Server</div>
+    <div class="status-row">
+      <div class="dot gray" id="connDot"></div>
+      <span class="status-label" id="connLabel">Disconnected</span>
+    </div>
+    <label style="display:block; font-size:11px; color:#888; margin:8px 0 4px;">Server URL</label>
+    <div style="display:flex; gap:6px;">
+      <input type="text" id="serverUrl" value="ws://127.0.0.1:9223/ws"
+             style="flex:1; background:#0f0f1a; border:1px solid #2a2a3e; border-radius:6px; padding:8px 10px;
+                    color:#e0e0e0; font-size:12px; font-family:monospace; outline:none;">
+      <button class="btn btn-primary" id="saveUrlBtn" style="width:auto; padding:8px 16px; margin-bottom:0;">Save</button>
+    </div>
+    <button class="btn btn-primary" id="connectBtn" style="margin-top:8px;">Connect to Server</button>
+  </div>
+  
+  <!-- Tab -->
+  <div class="section">
+    <div class="section-title">Debugger</div>
+    <div class="status-row">
+      <div class="dot gray" id="tabDot"></div>
+      <span class="status-label" id="tabLabel">No tab attached</span>
+    </div>
+    <div class="tab-id" id="tabIdDisplay"></div>
+    <div class="btn-row" style="margin-top: 8px;">
+      <button class="btn btn-primary" id="attachBtn" disabled style="flex:1">Attach Tab</button>
+      <button class="btn btn-danger" id="detachBtn" disabled style="flex:1">Detach</button>
+    </div>
+  </div>
+  
+  <!-- Help -->
+  <div class="help">
+    <b>How to use:</b><br>
+    1. Click <b>Connect</b> (or auto-connects)<br>
+    2. Make sure dot turns <b style="color:#4caf50">●</b> green<br>
+    3. Click <b>Attach Tab</b> — debugger attaches to current tab<br>
+    4. Badge shows <b>CDP</b> when active<br>
+    5. Server can now send commands via <code>POST /cdp</code>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
