@@ -15,15 +15,61 @@ let tabStatus = 'detached';
 
 // ====== CDP Event Listeners ======
 
+// Track which request IDs we want bodies for
+const bodyCapturePatterns = [
+  '/technology',
+  '/benchmarks/latest',
+  '/download',
+  '.pdf',
+  'application/json',
+];
+
+function shouldCaptureBody(url, mimeType) {
+  if (mimeType && (mimeType.includes('json') || mimeType.includes('pdf'))) return true;
+  for (const p of bodyCapturePatterns) {
+    if (url.includes(p)) return true;
+  }
+  return false;
+}
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   
+  // Forward event as-is
   ws.send(JSON.stringify({
     type: 'event',
     method: method,
     params: params,
     tabId: source.tabId
   }));
+  
+  // For responses we care about, fetch the body
+  if (method === 'Network.responseReceived' && params && params.requestId) {
+    const resp = params.response || {};
+    const url = resp.url || '';
+    const mime = resp.mimeType || '';
+    
+    if (shouldCaptureBody(url, mime) && attachedTabId) {
+      chrome.debugger.sendCommand(
+        { tabId: attachedTabId },
+        'Network.getResponseBody',
+        { requestId: params.requestId },
+        (result) => {
+          if (result && result.body && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'response_body',
+              requestId: params.requestId,
+              url: url,
+              mimeType: mime,
+              body: result.body,
+              base64Encoded: result.base64Encoded || false,
+              tabId: source.tabId,
+            }));
+          }
+        }
+      );
+    }
+  }
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {

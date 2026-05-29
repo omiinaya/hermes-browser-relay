@@ -90,6 +90,31 @@ class CaptureServer:
         if msg_type in ('hello', 'pong', 'ping', 'keepalive'):
             return
         
+        # Response body events - write and print preview
+        if msg_type == 'response_body':
+            await self.write_event(msg)
+            url = msg.get('url', '')
+            body = msg.get('body', '')
+            b64 = msg.get('base64Encoded', False)
+            body_preview = body[:200] if not b64 else f'[base64: {len(body)} chars]'
+            print(f"  📄 BODY: {url[:100]}")
+            print(f"     Preview: {body_preview}")
+            self.stats['responses'] += 1
+            return
+        
+        # CDP events - write but be selective about printing
+        if msg_type == 'event':
+            await self.write_event(msg)
+            method = msg.get('method', '')
+            url = msg.get('params', {}).get('response', {}).get('url', msg.get('params', {}).get('documentURL', ''))
+            if 'Network.responseReceived' in method:
+                print(f"  📡 CDP: {method} {url[:100]}")
+                self.stats['responses'] += 1
+            elif 'Network.requestWillBeSent' in method:
+                # Too verbose - skip printing
+                self.stats['webrequest'] += 1
+            return
+        
         # Batch mode (from custom extensions)
         if msg.get('action') == 'batch':
             events = msg.get('events', [])
