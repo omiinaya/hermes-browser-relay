@@ -32,6 +32,9 @@ function shouldCaptureBody(url, mimeType) {
   return false;
 }
 
+// Track requests we want response bodies for
+const bodyTargets = new Map();
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   
@@ -44,26 +47,36 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }));
   
   // For responses we care about, fetch the body
+  // Use Network.loadingFinished to ensure body is fully available
+  
   if (method === 'Network.responseReceived' && params && params.requestId) {
     const resp = params.response || {};
     const url = resp.url || '';
     const mime = resp.mimeType || '';
     
-    if (shouldCaptureBody(url, mime) && attachedTabId) {
+    if (shouldCaptureBody(url, mime)) {
+      // Store for capture at loadingFinished
+      bodyTargets.set(params.requestId, { url, mime });
+    }
+  }
+  
+  if (method === 'Network.loadingFinished') {
+    const target = bodyTargets.get(params.requestId);
+    if (target && attachedTabId) {
+      bodyTargets.delete(params.requestId);
       chrome.debugger.sendCommand(
         { tabId: attachedTabId },
         'Network.getResponseBody',
         { requestId: params.requestId },
         (result) => {
-          if (result && result.body && ws && ws.readyState === WebSocket.OPEN) {
+          if (result && result.body !== undefined && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type: 'response_body',
               requestId: params.requestId,
-              url: url,
-              mimeType: mime,
+              url: target.url,
+              mimeType: target.mime,
               body: result.body,
               base64Encoded: result.base64Encoded || false,
-              tabId: source.tabId,
             }));
           }
         }
