@@ -454,3 +454,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // ====== Init ======
 loadServerUrl();
 connectWS();
+
+// Auto-attach to the active tab on startup
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  if (tabs && tabs[0] && tabs[0].id) {
+    attachToTab(tabs[0].id);
+  }
+});
