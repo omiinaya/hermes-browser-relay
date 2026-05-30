@@ -39,6 +39,7 @@ class CaptureServer:
             'tabs': 0,
             'cdp_events': 0,
             'errors': 0,
+            'responses': 0,
         }
 
     async def start(self):
