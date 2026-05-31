@@ -108,19 +108,13 @@ async def handle_extension(request):
         pending_requests.clear()
 
 
-async def handle_cdp_post(request):
-    """HTTP endpoint: send a CDP command to Chrome."""
-
+async def _process_cdp_command(body):
+    """Shared CDP command execution logic (used by both POST and GET handlers)."""
     if not extension_ws or extension_ws.closed:
         return web.json_response(
             {"error": "Extension not connected", "hint": "Open Chrome extension and click Attach"},
             status=503,
         )
-
-    try:
-        body = await request.json()
-    except Exception as e:
-        return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
     method = body.get("method")
     params = body.get("params", {})
@@ -151,6 +145,15 @@ async def handle_cdp_post(request):
         return web.json_response({"error": f"CDP command timed out after {timeout}s", "method": method}, status=504)
 
 
+async def handle_cdp_post(request):
+    """HTTP endpoint: send a CDP command to Chrome."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+    return await _process_cdp_command(body)
+
+
 async def handle_status(request):
     """HTTP endpoint: server status."""
     return web.json_response({
@@ -179,9 +182,8 @@ async def handle_cdp_get(request):
         if url:
             params["url"] = url
         body = {"method": method, "params": params}
-        # Forward to POST handler
-        request._body = json.dumps(body).encode()
-        return await handle_cdp_post(request)
+        # Forward to POST handler via shared logic
+        return await _process_cdp_command(body)
     return web.json_response({"error": "Use GET ?method=Page.navigate&url=... or POST /cdp"}, status=400)
 
 
