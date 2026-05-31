@@ -14,13 +14,14 @@ Handles event types from browser-relay extension:
 """
 import asyncio
 import json
-import sys
-sys.stdout.reconfigure(line_buffering=True)
 import signal
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import websockets
+
+sys.stdout.reconfigure(line_buffering=True)
 
 CAPTURE_DIR = Path("/tmp/hermes-captures")
 CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
