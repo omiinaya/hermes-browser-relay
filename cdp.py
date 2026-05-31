@@ -229,11 +229,13 @@ def main():
         parser.print_help()
         sys.exit(1)
     
-    server_url = args.server or SERVER
+    global SERVER
+    if args.server:
+        SERVER = args.server
     
     if args.command == "status":
         try:
-            with urllib.request.urlopen(f"{server_url}/status", timeout=5) as resp:
+            with urllib.request.urlopen(f"{SERVER}/status", timeout=5) as resp:
                 print(json.dumps(json.loads(resp.read().decode()), indent=2))
         except Exception as e:
             print(f"Error: {e}")
