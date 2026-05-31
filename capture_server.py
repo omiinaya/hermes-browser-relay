@@ -178,7 +178,7 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             asyncio.get_event_loop().add_signal_handler(
-                sig, lambda: stop.set_result(None)
+                sig, lambda s=sig: stop.set_result(None)
             )
         except NotImplementedError:
             # Windows doesn't support add_signal_handler
