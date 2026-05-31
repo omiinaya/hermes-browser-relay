@@ -106,6 +106,7 @@ class CaptureServer:
         # CDP events - write but be selective about printing
         if msg_type == 'event':
             await self.write_event(msg)
+            self.stats['cdp_events'] += 1
             method = msg.get('method', '')
             url = msg.get('params', {}).get('response', {}).get('url', msg.get('params', {}).get('documentURL', ''))
             if 'Network.responseReceived' in method:
@@ -137,8 +138,6 @@ class CaptureServer:
             self.stats['downloads'] += 1
         elif msg_type == 'tab':
             self.stats['tabs'] += 1
-        elif msg_type == 'event':
-            self.stats['cdp_events'] += 1
 
     async def write_event(self, event):
         line = json.dumps(event, default=str) + '\n'
