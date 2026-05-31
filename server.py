@@ -110,7 +110,6 @@ async def handle_extension(request):
 
 async def handle_cdp_post(request):
     """HTTP endpoint: send a CDP command to Chrome."""
-    global extension_ws
 
     if not extension_ws or extension_ws.closed:
         return web.json_response(
