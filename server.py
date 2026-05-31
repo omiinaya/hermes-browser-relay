@@ -68,7 +68,7 @@ async def handle_extension(request):
                         try:
                             cb(data)
                         except Exception:
-                            pass
+                            log.exception("Event subscriber error in event handler")
                     continue
                 
                 if msg_type == "webrequest":
@@ -81,7 +81,7 @@ async def handle_extension(request):
                         try:
                             cb(data)
                         except Exception:
-                            pass
+                            log.exception("Event subscriber error in webrequest handler")
                     continue
 
                 if msg_id and msg_id in pending_requests:
