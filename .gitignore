@@ -1,2 +1,17 @@
-*/__pycache__/*
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime
+*.log
+.env
+*.env.local
+
+# IDE
+.vscode/
+.idea/
