@@ -244,7 +244,7 @@ async def main():
     print("  ║     CDP Relay Server v1.0             ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
-    print(f"  Extension WS: ws://192.168.1.200:{args.port}/ws")
+    print(f"  Extension WS: ws://127.0.0.1:{args.port}/ws")
     print(f"  CDP API:      http://127.0.0.1:{args.port}/cdp")
     print(f"  Status:       http://127.0.0.1:{args.port}/status")
     print(f"  Events (SSE): http://127.0.0.1:{args.port}/events")

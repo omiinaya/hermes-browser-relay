@@ -1,7 +1,7 @@
 // CDP Bridge — Background Service Worker
 // Connects chrome.debugger to Hermes Agent via WebSocket
 
-const DEFAULT_SERVER = 'ws://192.168.1.200:9988';
+const DEFAULT_SERVER = 'ws://127.0.0.1:9223/ws';
 let SERVER_URL = DEFAULT_SERVER;
 let ws = null;
 let wsReconnectTimer = null;

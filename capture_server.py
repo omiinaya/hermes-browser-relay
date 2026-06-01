@@ -54,7 +54,7 @@ class CaptureServer:
         
         print(f"📡 Capture server starting on ws://0.0.0.0:{PORT}")
         print(f"📁 Writing to: {CAPTURE_FILE}")
-        print(f"🌐 Accessible at ws://192.168.1.200:{PORT} (LAN)")
+        print(f"🌐 Accessible at ws://127.0.0.1:{PORT} (local)")
         
         async with websockets.serve(self.handle_client, "0.0.0.0", PORT):
             await asyncio.Future()
@@ -68,7 +68,7 @@ class CaptureServer:
             async for message in websocket:
                 try:
                     data = json.loads(message)
-                    await self.process_message(data, websocket)
+                    await self.process_message(data)
                 except json.JSONDecodeError:
                     print(f"⚠️  Bad JSON from {remote}")
                 except Exception as e:
@@ -80,7 +80,7 @@ class CaptureServer:
             self.clients.discard(websocket)
             print(f"🔌 Client disconnected: {remote}")
 
-    async def process_message(self, msg, websocket):
+    async def process_message(self, msg):
         # Add timestamp if not present
         if 'ts' not in msg:
             msg['_received'] = datetime.now(timezone.utc).timestamp() * 1000
