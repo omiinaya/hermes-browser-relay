@@ -95,7 +95,7 @@ class CaptureServer:
         if msg_type == 'response_body':
             await self.write_event(msg)
             url = msg.get('url', '')
-            body = msg.get('body', '')
+            body = msg.get('body', '') or ''
             b64 = msg.get('base64Encoded', False)
             body_preview = body[:200] if not b64 else f'[base64: {len(body)} chars]'
             print(f"  📄 BODY: {url[:100]}")
