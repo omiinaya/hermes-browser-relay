@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from json import JSONDecodeError
 from pathlib import Path
 
 from aiohttp import web
@@ -149,8 +150,8 @@ async def handle_cdp_post(request):
     """HTTP endpoint: send a CDP command to Chrome."""
     try:
         body = await request.json()
-    except Exception as e:
-        return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+    except (JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
     return await _process_cdp_command(body)
 
 
