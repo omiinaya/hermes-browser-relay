@@ -87,7 +87,7 @@ async def handle_extension(request):
 
                 if msg_id and msg_id in pending_requests:
                     # Response to a pending HTTP /cdp request
-                    pending_requests[msg_id].set_result(data)
+                    pending_requests.pop(msg_id).set_result(data)
                     continue
 
                 log.warning(f"Unhandled message: {data.get('type', 'unknown')}")
@@ -133,7 +133,14 @@ async def _process_cdp_command(body):
 
     # Send CDP command via extension
     cmd = {"id": cdp_id, "method": method, "params": params}
-    await extension_ws.send_json(cmd)
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response(
+            {"error": "Failed to send CDP command to extension"},
+            status=502,
+        )
     log.info(f"CDP -> {method}")
 
     # Wait for response with timeout
