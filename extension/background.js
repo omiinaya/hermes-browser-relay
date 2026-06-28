@@ -1,5 +1,7 @@
-// CDP Bridge — Background Service Worker
+// CDP Bridge — Background Service Worker (v1.1.0)
 // Connects chrome.debugger to Hermes Agent via WebSocket
+// Features: heartbeat keepalive, exponential backoff reconnect,
+// tab-switch auto-reattach, robust error handling
 
 const DEFAULT_SERVER = 'ws://127.0.0.1:9223/ws';
 let SERVER_URL = DEFAULT_SERVER;
@@ -7,15 +9,33 @@ let ws = null;
 let wsReconnectTimer = null;
 let attachedTabId = null;
 let attached = false;
+let reconnectDelay = 1000; // Starts at 1s, backs off to max 60s
 
 // Connection status: 'disconnected', 'connecting', 'connected'
 let connectionStatus = 'disconnected';
 // Tab status: 'detached', 'attaching', 'attached'
 let tabStatus = 'detached';
 
+// Client-side heartbeat fallback (if server doesn't ping)
+let clientHeartbeatTimer = null;
+const CLIENT_HEARTBEAT_INTERVAL = 20000; // 20s
+
+// ====== Safe Send Helper ======
+
+function safeSend(data) {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+      return true;
+    }
+  } catch (e) {
+    console.warn('[CDP] safeSend failed:', e.message);
+  }
+  return false;
+}
+
 // ====== CDP Event Listeners ======
 
-// Track which request IDs we want bodies for
 const bodyCapturePatterns = [
   '/technology',
   '/benchmarks/latest',
@@ -37,29 +57,25 @@ const bodyTargets = new Map();
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  
+
   // Forward event as-is
-  ws.send(JSON.stringify({
+  safeSend({
     type: 'event',
     method: method,
     params: params,
-    tabId: source.tabId
-  }));
-  
-  // For responses we care about, fetch the body
-  // Use Network.loadingFinished to ensure body is fully available
-  
+    tabId: source.tabId,
+  });
+
   if (method === 'Network.responseReceived' && params && params.requestId) {
     const resp = params.response || {};
     const url = resp.url || '';
     const mime = resp.mimeType || '';
-    
+
     if (shouldCaptureBody(url, mime)) {
-      // Store for capture at loadingFinished
       bodyTargets.set(params.requestId, { url, mime });
     }
   }
-  
+
   if (method === 'Network.loadingFinished') {
     const target = bodyTargets.get(params.requestId);
     if (target && attachedTabId) {
@@ -70,14 +86,14 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         { requestId: params.requestId },
         (result) => {
           if (result && result.body !== undefined && ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
+            safeSend({
               type: 'response_body',
               requestId: params.requestId,
               url: target.url,
               mimeType: target.mime,
               body: result.body,
               base64Encoded: result.base64Encoded || false,
-            }));
+            });
           }
         }
       );
@@ -97,8 +113,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 function sendWebRequest(type, details) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  // Trim down to essential fields to avoid flooding
-  ws.send(JSON.stringify({
+  safeSend({
     type: 'webrequest',
     event: type,
     tabId: details.tabId,
@@ -110,10 +125,9 @@ function sendWebRequest(type, details) {
     resourceType: details.type,
     ip: details.ip,
     timeStamp: details.timeStamp,
-    // Response headers (if available)
     responseHeaders: details.responseHeaders ? details.responseHeaders.slice(0, 30) : undefined,
     requestHeaders: details.requestHeaders ? details.requestHeaders.slice(0, 30) : undefined,
-  }));
+  });
 }
 
 chrome.webRequest.onBeforeRequest.addListener(
@@ -164,10 +178,11 @@ function saveServerUrl(url, callback) {
     // Reconnect with new URL
     if (ws) {
       ws.onclose = null;
-      ws.close();
+      try { ws.close(); } catch (e) { /* ignore */ }
       ws = null;
     }
     if (callback) callback();
+    reconnectDelay = 1000; // Reset backoff on URL change
     setTimeout(connectWS, 100);
   });
 }
@@ -176,27 +191,33 @@ function saveServerUrl(url, callback) {
 
 function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  
+
+  ensureKeepalive(); // Re-arm the keepalive alarm on every connect attempt
   connectionStatus = 'connecting';
   updateBadge();
-  
+
+  console.log('[CDP] Connecting to', SERVER_URL);
   ws = new WebSocket(SERVER_URL);
-  
+
   ws.onopen = () => {
     console.log('[CDP] WebSocket connected to ' + SERVER_URL);
     connectionStatus = 'connected';
+    reconnectDelay = 1000; // Reset backoff on successful connect
     updateBadge();
-    
-    // If we were attached, send hello with tab info
+
+    // Send hello with tab info if attached
     if (attachedTabId) {
-      ws.send(JSON.stringify({
+      safeSend({
         type: 'hello',
         tabId: attachedTabId,
-        info: { attached: true }
-      }));
+        info: { attached: true },
+      });
     }
+
+    // Start client-side heartbeat as fallback
+    startClientHeartbeat();
   };
-  
+
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
@@ -205,23 +226,33 @@ function connectWS() {
       console.error('[CDP] Failed to parse server message:', e);
     }
   };
-  
-  ws.onclose = () => {
-    console.log('[CDP] WebSocket disconnected');
+
+  ws.onclose = (event) => {
+    console.log('[CDP] WebSocket disconnected (code:', event.code, 'reason:', event.reason || 'none', ')');
     connectionStatus = 'disconnected';
     updateBadge();
     ws = null;
-    
-    // Auto-reconnect after 3s
-    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = setTimeout(connectWS, 3000);
+    stopClientHeartbeat();
+
+    // Exponential backoff reconnect
+    scheduleReconnect();
   };
-  
+
   ws.onerror = (err) => {
-    console.error('[CDP] WebSocket error:', err);
-    connectionStatus = 'error';
-    updateBadge();
+    console.error('[CDP] WebSocket error');
+    // onclose will fire after this, triggering reconnect
   };
+}
+
+function scheduleReconnect() {
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+
+  const delay = reconnectDelay;
+  console.log('[CDP] Reconnecting in', delay, 'ms');
+  wsReconnectTimer = setTimeout(connectWS, delay);
+
+  // Exponential backoff: 1s → 3s → 9s → 27s → 60s (cap)
+  reconnectDelay = Math.min(reconnectDelay * 3, 60000);
 }
 
 function disconnectWS() {
@@ -231,30 +262,65 @@ function disconnectWS() {
   }
   if (ws) {
     ws.onclose = null;
-    ws.close();
+    try { ws.close(); } catch (e) { /* ignore */ }
     ws = null;
   }
+  reconnectDelay = 1000;
   connectionStatus = 'disconnected';
+  stopClientHeartbeat();
+  cancelKeepalive();
   updateBadge();
+}
+
+// ====== Heartbeat ======
+
+function startClientHeartbeat() {
+  stopClientHeartbeat();
+  clientHeartbeatTimer = setInterval(() => {
+    // Send client-side ping as fallback heartbeat
+    // The server also pings us — this ensures bidirectional detection
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      safeSend({ type: 'ping' });
+    }
+  }, CLIENT_HEARTBEAT_INTERVAL);
+}
+
+function stopClientHeartbeat() {
+  if (clientHeartbeatTimer) {
+    clearInterval(clientHeartbeatTimer);
+    clientHeartbeatTimer = null;
+  }
 }
 
 // ====== Handle CDP Commands from Server ======
 
 function handleServerMessage(msg) {
+  const msgType = msg.type;
+
+  // Handle heartbeats from server
+  if (msgType === 'ping') {
+    safeSend({ type: 'pong' });
+    return;
+  }
+  if (msgType === 'pong') {
+    // Server responded to our ping — connection is alive
+    return;
+  }
+
   const id = msg.id;
   const method = msg.method;
   const params = msg.params || {};
-  
+
   if (!attachedTabId || !attached) {
-    if (id && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+    if (id) {
+      safeSend({
         id: id,
-        error: { code: -32000, message: 'No tab attached' }
-      }));
+        error: { code: -32000, message: 'No tab attached' },
+      });
     }
     return;
   }
-  
+
   chrome.debugger.sendCommand(
     { tabId: attachedTabId },
     method,
@@ -262,20 +328,20 @@ function handleServerMessage(msg) {
     (result) => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
-        if (id && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
+        if (id) {
+          safeSend({
             id: id,
-            error: { code: -32000, message: lastError.message }
-          }));
+            error: { code: -32000, message: lastError.message },
+          });
         }
         return;
       }
-      
-      if (id && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
+
+      if (id) {
+        safeSend({
           id: id,
-          result: result || {}
-        }));
+          result: result || {},
+        });
       }
     }
   );
@@ -287,7 +353,7 @@ async function attachToTab(tabId) {
   if (attached && attachedTabId === tabId) {
     return { success: true, tabId };
   }
-  
+
   // Detach from current first
   if (attachedTabId) {
     try {
@@ -298,10 +364,10 @@ async function attachToTab(tabId) {
       // Ignore detach errors
     }
   }
-  
+
   tabStatus = 'attaching';
   updateBadge();
-  
+
   return new Promise((resolve) => {
     chrome.debugger.attach({ tabId: tabId }, '1.3', () => {
       const lastError = chrome.runtime.lastError;
@@ -311,25 +377,33 @@ async function attachToTab(tabId) {
         resolve({ success: false, error: lastError.message });
         return;
       }
-      
+
       attachedTabId = tabId;
       attached = true;
       tabStatus = 'attached';
       updateBadge();
-      
-      // Enable Network + Page domains
-      chrome.debugger.sendCommand({ tabId }, 'Network.enable', {}, () => {});
-      chrome.debugger.sendCommand({ tabId }, 'Page.enable', {}, () => {});
-      
+
+      // Enable Network + Page domains (fire-and-forget)
+      chrome.debugger.sendCommand({ tabId }, 'Network.enable', {}, () => {
+        if (chrome.runtime.lastError) {
+          console.warn('[CDP] Network.enable failed:', chrome.runtime.lastError.message);
+        }
+      });
+      chrome.debugger.sendCommand({ tabId }, 'Page.enable', {}, () => {
+        if (chrome.runtime.lastError) {
+          console.warn('[CDP] Page.enable failed:', chrome.runtime.lastError.message);
+        }
+      });
+
       // Notify server
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
+        safeSend({
           type: 'hello',
           tabId: tabId,
-          info: { attached: true }
-        }));
+          info: { attached: true },
+        });
       }
-      
+
       resolve({ success: true, tabId });
     });
   });
@@ -340,7 +414,7 @@ async function detach() {
     tabStatus = 'detached';
     return { success: true };
   }
-  
+
   return new Promise((resolve) => {
     chrome.debugger.detach({ tabId: attachedTabId }, () => {
       attachedTabId = null;
@@ -356,7 +430,7 @@ async function detach() {
 
 function updateBadge() {
   let color, text;
-  
+
   if (connectionStatus === 'connected' && tabStatus === 'attached') {
     color = '#4CAF50';
     text = 'CDP';
@@ -370,16 +444,39 @@ function updateBadge() {
     color = '#9E9E9E';
     text = '';
   }
-  
+
   chrome.action.setBadgeBackgroundColor({ color });
   chrome.action.setBadgeText({ text });
 }
+
+// ====== Tab Switch Auto-Reattach ======
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  const newTabId = activeInfo.tabId;
+
+  // Skip if same tab or no connection
+  if (newTabId === attachedTabId) return;
+  if (connectionStatus !== 'connected') return;
+
+  // Ignore chrome:// URLs
+  chrome.tabs.get(newTabId, (tab) => {
+    if (chrome.runtime.lastError) return;
+    if (!tab || !tab.url) return;
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:')) {
+      return;
+    }
+
+    console.log('[CDP] Tab switched to', newTabId, '-', tab.url);
+    attachToTab(newTabId);
+  });
+});
 
 // ====== Message from Popup ======
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
     case 'connect':
+      reconnectDelay = 1000; // Reset backoff on manual connect
       connectWS();
       setTimeout(() => sendResponse({ connectionStatus, tabStatus, attachedTabId }), 500);
       return true;
@@ -424,7 +521,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.downloads.onCreated.addListener((item) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
+  safeSend({
     type: 'download',
     event: 'created',
     id: item.id,
@@ -433,20 +530,20 @@ chrome.downloads.onCreated.addListener((item) => {
     totalBytes: item.totalBytes,
     mime: item.mime,
     danger: item.danger,
-  }));
+  });
 });
 
 chrome.downloads.onChanged.addListener((delta) => {
   if (!delta.state) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
+  safeSend({
     type: 'download',
     event: 'changed',
     id: delta.id,
     state: delta.state.current,
     filename: delta.filename?.current,
     error: delta.error?.current,
-  }));
+  });
 });
 
 // ====== Tab Navigation ======
@@ -455,17 +552,37 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (!tab.url || tab.url.startsWith('chrome')) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
+  safeSend({
     type: 'tab',
     event: 'navigated',
     tabId: tabId,
     url: tab.url,
     title: tab.title,
-  }));
+  });
+});
+
+// ====== Chrome Alarms Keepalive (prevents MV3 SW termination) ======
+
+function ensureKeepalive() {
+  chrome.alarms.create('cdp-keepalive', { periodInMinutes: 0.5 });
+}
+
+function cancelKeepalive() {
+  chrome.alarms.clear('cdp-keepalive');
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'cdp-keepalive') {
+    // Send a keepalive ping if connected
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      safeSend({ type: 'keepalive' });
+    }
+  }
 });
 
 // ====== Init ======
 loadServerUrl();
+ensureKeepalive();
 connectWS();
 
 // Auto-attach to the active tab on startup

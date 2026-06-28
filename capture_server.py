@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes Traffic Capture Server
+Hermes Traffic Capture Server (v1.1.0)
 Receives browser events via WebSocket from the Chrome extension
 and writes them to a JSONL file.
 
@@ -10,12 +10,13 @@ Handles event types from browser-relay extension:
   - tab (navigated)
   - event (CDP protocol events)
   - batch (buffered events from custom extensions)
-  - hello / pong (connection management)
+  - hello / pong / ping / keepalive (connection management)
 """
 import asyncio
 import json
 import signal
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,11 +27,13 @@ sys.stdout.reconfigure(line_buffering=True)
 CAPTURE_DIR = Path("/tmp/hermes-captures")
 CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
 PORT = 9988
+HEARTBEAT_INTERVAL = 15       # Send ping every 15s
+HEARTBEAT_TIMEOUT = 45        # Disconnect if no message for 45s
 
 
 class CaptureServer:
     def __init__(self):
-        self.clients = set()
+        self.clients = {}  # websocket -> {"remote": addr, "last_message": float}
         self.event_count = 0
         self.file_handle = None
         self.stats = {
@@ -44,28 +47,31 @@ class CaptureServer:
 
     async def start(self):
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-        
+
         # Rotate old capture files (keep last 5)
         old_files = sorted(CAPTURE_DIR.glob("capture*.jsonl"), reverse=True)
         for f in old_files[4:]:
             f.unlink(missing_ok=True)
-        
+
         self.file_handle = open(CAPTURE_FILE, 'a')
-        
+
         print(f"📡 Capture server starting on ws://0.0.0.0:{PORT}")
         print(f"📁 Writing to: {CAPTURE_FILE}")
         print(f"🌐 Accessible at ws://127.0.0.1:{PORT} (local)")
-        
-        async with websockets.serve(self.handle_client, "0.0.0.0", PORT):
+
+        async with websockets.serve(self.handle_client, "0.0.0.0", PORT,
+                                    ping_interval=HEARTBEAT_INTERVAL,
+                                    ping_timeout=HEARTBEAT_TIMEOUT):
             await asyncio.Future()
 
     async def handle_client(self, websocket):
-        self.clients.add(websocket)
         remote = websocket.remote_address
+        self.clients[websocket] = {"remote": remote, "last_message": time.time()}
         print(f"🔌 Client connected: {remote}")
-        
+
         try:
             async for message in websocket:
+                self.clients[websocket]["last_message"] = time.time()
                 try:
                     data = json.loads(message)
                     await self.process_message(data)
@@ -77,20 +83,20 @@ class CaptureServer:
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            self.clients.discard(websocket)
+            self.clients.pop(websocket, None)
             print(f"🔌 Client disconnected: {remote}")
 
     async def process_message(self, msg):
         # Add timestamp if not present
         if 'ts' not in msg:
             msg['_received'] = datetime.now(timezone.utc).timestamp() * 1000
-        
+
         msg_type = msg.get('type', msg.get('action', 'unknown'))
-        
+
         # Connection management - don't log these
         if msg_type in ('hello', 'pong', 'ping', 'keepalive'):
             return
-        
+
         # Response body events - write and print preview
         if msg_type == 'response_body':
             await self.write_event(msg)
@@ -102,13 +108,14 @@ class CaptureServer:
             print(f"     Preview: {body_preview}")
             self.stats['responses'] += 1
             return
-        
+
         # CDP events - write but be selective about printing
         if msg_type == 'event':
             await self.write_event(msg)
             self.stats['cdp_events'] += 1
             method = msg.get('method', '')
-            url = msg.get('params', {}).get('response', {}).get('url', msg.get('params', {}).get('documentURL', ''))
+            url = msg.get('params', {}).get('response', {}).get('url',
+                   msg.get('params', {}).get('documentURL', ''))
             if 'Network.responseReceived' in method:
                 print(f"  📡 CDP: {method} {url[:100]}")
                 self.stats['responses'] += 1
@@ -116,7 +123,7 @@ class CaptureServer:
                 # Too verbose - skip printing
                 self.stats['webrequest'] += 1
             return
-        
+
         # Batch mode (from custom extensions)
         if msg.get('action') == 'batch':
             events = msg.get('events', [])
@@ -128,10 +135,10 @@ class CaptureServer:
                 elif 'download' in et:
                     self.stats['downloads'] += 1
             return
-        
+
         # Individual events
         await self.write_event(msg)
-        
+
         if msg_type == 'webrequest':
             self.stats['webrequest'] += 1
         elif msg_type == 'download':
@@ -144,7 +151,7 @@ class CaptureServer:
         self.file_handle.write(line)
         self.file_handle.flush()
         self.event_count += 1
-        
+
         # Live summary
         etype = event.get('eventType', event.get('type', event.get('action', '?')))
         if etype == 'webrequest':
@@ -173,7 +180,10 @@ class CaptureServer:
 
 async def main():
     server = CaptureServer()
-    
+
+    print("Hermes Traffic Capture Server v1.1.0")
+    print("=" * 50)
+
     stop = asyncio.Future()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -183,10 +193,7 @@ async def main():
         except NotImplementedError:
             # Windows doesn't support add_signal_handler
             pass
-    
-    print("Hermes Traffic Capture Server")
-    print("=" * 50)
-    
+
     try:
         await asyncio.wait_for(server.start(), timeout=None)
     except asyncio.CancelledError:

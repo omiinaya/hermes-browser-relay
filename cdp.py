@@ -16,6 +16,7 @@ import time
 import urllib.request
 import urllib.error
 
+VERSION = "1.1.0"
 SERVER = "http://127.0.0.1:9223"
 
 
@@ -234,6 +235,9 @@ def main():
         SERVER = args.server
     
     if args.command == "status":
+        print(f"CDP Bridge CLI v{VERSION}")
+        print(f"Server: {SERVER}")
+        print()
         try:
             with urllib.request.urlopen(f"{SERVER}/status", timeout=5) as resp:
                 print(json.dumps(json.loads(resp.read().decode()), indent=2))
