@@ -56,6 +56,17 @@ function shouldCaptureBody(url, mimeType) {
 
 // Track requests we want response bodies for
 const bodyTargets = new Map();
+const BODY_TARGET_TTL = 30000; // 30s — sweep orphaned entries that never got loadingFinished
+
+// Periodically sweep stale bodyTargets entries (memory leak guard)
+setInterval(() => {
+  const cutoff = Date.now() - BODY_TARGET_TTL;
+  for (const [reqId, entry] of bodyTargets) {
+    if (entry.timestamp < cutoff) {
+      bodyTargets.delete(reqId);
+    }
+  }
+}, BODY_TARGET_TTL / 2);
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -74,7 +85,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     const mime = resp.mimeType || '';
 
     if (shouldCaptureBody(url, mime)) {
-      bodyTargets.set(params.requestId, { url, mime });
+      bodyTargets.set(params.requestId, { url, mime, timestamp: Date.now() });
     }
   }
 
@@ -109,6 +120,22 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   attached = false;
   tabStatus = 'detached';
   updateBadge();
+
+  // Auto-reattempt with exponential backoff
+  if (connectionStatus === 'connected') {
+    const reattachDelay = Math.min((reconnectDelay || 1000), 30000);
+    console.log(`[CDP] Will attempt reattach in ${reattachDelay}ms`);
+    setTimeout(() => {
+      if (!attached && connectionStatus === 'connected') {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs && tabs[0] && tabs[0].id && tabs[0].url &&
+              !tabs[0].url.startsWith('chrome://') && !tabs[0].url.startsWith('edge://') && !tabs[0].url.startsWith('about:')) {
+            attachToTab(tabs[0].id);
+          }
+        });
+      }
+    }, reattachDelay);
+  }
 });
 
 // ====== Global Web Request Capture (all tabs) ======

@@ -264,13 +264,6 @@ async def handle_status(request):
     })
 
 
-async def handle_static(request):
-    """Serve the Chrome extension as a downloadable zip."""
-    ext_dir = Path(__file__).parent / "extension"
-    if not ext_dir.exists():
-        return web.json_response({"error": "Extension not found"}, status=404)
-    return web.FileResponse(ext_dir / "manifest.json")
-
 
 async def handle_cdp_get(request):
     """HTTP endpoint: convenience GET with query param method."""
