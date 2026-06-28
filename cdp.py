@@ -46,34 +46,32 @@ def send_cdp(method, params=None, timeout=60):
 
 
 def watch_events():
-    """Stream CDP events via SSE."""
+    """Stream CDP events via SSE using buffered reads."""
     import http.client
-    
+
     conn = http.client.HTTPConnection("127.0.0.1", 9223, timeout=300)
     conn.request("GET", "/events")
     resp = conn.getresponse()
-    
+
     print("Watching CDP events... (Ctrl+C to stop)\n", file=sys.stderr)
-    
+
     buffer = ""
     try:
         while True:
-            chunk = resp.read(1)
+            chunk = resp.read(4096)
             if not chunk:
                 break
-            char = chunk.decode()
-            if char == '\n':
-                if buffer.startswith("data: "):
+            buffer += chunk.decode()
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                if line.startswith("data: "):
                     try:
-                        event = json.loads(buffer[6:])
+                        event = json.loads(line[6:])
                         method = event.get("method", "?")
                         params_summary = json.dumps(event.get("params", {}))[:200]
                         print(f"[{method}] {params_summary}")
                     except json.JSONDecodeError:
-                        print(buffer)
-                buffer = ""
-            else:
-                buffer += char
+                        print(line)
     except KeyboardInterrupt:
         pass
     finally:

@@ -11,7 +11,13 @@ Handles event types from browser-relay extension:
   - event (CDP protocol events)
   - batch (buffered events from custom extensions)
   - hello / pong / ping / keepalive (connection management)
+
+Usage:
+    python capture_server.py                  # 0.0.0.0:9988 (LAN access)
+    python capture_server.py --bind 127.0.0.1  # localhost only (safer)
+    python capture_server.py --port 9989
 """
+import argparse
 import asyncio
 import json
 import signal
@@ -26,7 +32,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 CAPTURE_DIR = Path("/tmp/hermes-captures")
 CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
-PORT = 9988
+DEFAULT_PORT = 9988
 HEARTBEAT_INTERVAL = 15       # Send ping every 15s
 HEARTBEAT_TIMEOUT = 45        # Disconnect if no message for 45s
 
@@ -45,7 +51,7 @@ class CaptureServer:
             'responses': 0,
         }
 
-    async def start(self):
+    async def start(self, host="0.0.0.0", port=DEFAULT_PORT):
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Rotate old capture files (keep last 5)
@@ -55,11 +61,12 @@ class CaptureServer:
 
         self.file_handle = open(CAPTURE_FILE, 'a')
 
-        print(f"📡 Capture server starting on ws://0.0.0.0:{PORT}")
+        print(f"📡 Capture server starting on ws://{host}:{port}")
         print(f"📁 Writing to: {CAPTURE_FILE}")
-        print(f"🌐 Accessible at ws://127.0.0.1:{PORT} (local)")
+        local = "localhost" if host == "0.0.0.0" else host
+        print(f"🌐 Accessible at ws://{local}:{port} (local)")
 
-        async with websockets.serve(self.handle_client, "0.0.0.0", PORT,
+        async with websockets.serve(self.handle_client, host, port,
                                     ping_interval=HEARTBEAT_INTERVAL,
                                     ping_timeout=HEARTBEAT_TIMEOUT):
             await asyncio.Future()
@@ -179,10 +186,19 @@ class CaptureServer:
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Hermes Traffic Capture Server")
+    parser.add_argument("--bind", default="0.0.0.0",
+                        help="Bind address (default: 0.0.0.0, use 127.0.0.1 for localhost only)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"Port (default: {DEFAULT_PORT})")
+    args = parser.parse_args()
+
     server = CaptureServer()
 
     print("Hermes Traffic Capture Server v1.1.0")
     print("=" * 50)
+    print(f"  Binding: {args.bind}:{args.port}")
+    print()
 
     stop = asyncio.Future()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -191,11 +207,10 @@ async def main():
                 sig, lambda s=sig: stop.set_result(None)
             )
         except NotImplementedError:
-            # Windows doesn't support add_signal_handler
             pass
 
     try:
-        await asyncio.wait_for(server.start(), timeout=None)
+        await asyncio.wait_for(server.start(host=args.bind, port=args.port), timeout=None)
     except asyncio.CancelledError:
         pass
     finally:

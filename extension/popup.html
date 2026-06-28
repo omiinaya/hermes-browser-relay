@@ -169,14 +169,21 @@
     </div>
   </div>
   
+  <!-- Diagnostics -->
+  <div class="section" style="display:none" id="diagSection">
+    <div class="section-title">Connection Health</div>
+    <div class="status-row"><span class="status-label" id="diagLastMsg">—</span></div>
+    <div class="status-row" style="font-size:11px; color:#888;"><span id="diagServerUrl">—</span></div>
+  </div>
+  
   <!-- Help -->
-  <div class="help">
+  <div class="help" style="font-size:11px; color:#888;">
     <b>How to use:</b><br>
-    1. Click <b>Connect</b> (or auto-connects)<br>
-    2. Make sure dot turns <b style="color:#4caf50">●</b> green<br>
-    3. Click <b>Attach Tab</b> — debugger attaches to current tab<br>
-    4. Badge shows <b>CDP</b> when active<br>
-    5. Server can now send commands via <code>POST /cdp</code>
+    1. Extension auto-connects and auto-attaches to active tab<br>
+    2. Badge shows <b style="color:#4caf50">CDP</b> when ready<br>
+    3. Switch tabs freely — debugger follows you automatically<br>
+    4. Server sends commands via <code>POST /cdp</code><br>
+    <span style="font-size:10px;">♥ Heartbeat every 15s · auto-reconnect with backoff</span>
   </div>
   
   <script src="popup.js"></script>
