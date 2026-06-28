@@ -37,7 +37,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const tabIdDisplay = document.getElementById('tabIdDisplay');
   const attachBtn = document.getElementById('attachBtn');
   const detachBtn = document.getElementById('detachBtn');
-  
+
+  const diagSection = document.getElementById('diagSection');
+  const diagLastMsg = document.getElementById('diagLastMsg');
+  const diagServerUrl = document.getElementById('diagServerUrl');
+
+  function timeAgo(ts) {
+    if (!ts) return 'never';
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 2) return 'just now';
+    if (sec < 60) return sec + 's ago';
+    const min = Math.floor(sec / 60);
+    return min + 'm ' + (sec % 60) + 's ago';
+  }
+
   function updateUI(status) {
     // Connection status
     const connColors = { connected: 'green', connecting: 'yellow', disconnected: 'gray', error: 'red' };
@@ -69,6 +82,15 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       connectBtn.textContent = 'Connect to Server';
       connectBtn.className = 'btn btn-primary';
+    }
+
+    // Diagnostics
+    if (status.connectionStatus === 'connected') {
+      diagSection.style.display = 'block';
+      diagLastMsg.textContent = 'Last message: ' + timeAgo(status.lastServerMessageTime);
+      diagServerUrl.textContent = 'Server: ' + status.serverUrl;
+    } else {
+      diagSection.style.display = 'none';
     }
   }
   

@@ -15,6 +15,8 @@ let reconnectDelay = 1000; // Starts at 1s, backs off to max 60s
 let connectionStatus = 'disconnected';
 // Tab status: 'detached', 'attaching', 'attached'
 let tabStatus = 'detached';
+// Track last time we heard from the server
+let lastServerMessageTime = null;
 
 // Client-side heartbeat fallback (if server doesn't ping)
 let clientHeartbeatTimer = null;
@@ -219,6 +221,7 @@ function connectWS() {
   };
 
   ws.onmessage = (event) => {
+    lastServerMessageTime = Date.now();
     try {
       const msg = JSON.parse(event.data);
       handleServerMessage(msg);
@@ -230,6 +233,7 @@ function connectWS() {
   ws.onclose = (event) => {
     console.log('[CDP] WebSocket disconnected (code:', event.code, 'reason:', event.reason || 'none', ')');
     connectionStatus = 'disconnected';
+    lastServerMessageTime = null;
     updateBadge();
     ws = null;
     stopClientHeartbeat();
@@ -499,7 +503,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'get_status':
-      sendResponse({ connectionStatus, tabStatus, attachedTabId, serverUrl: SERVER_URL });
+      sendResponse({ connectionStatus, tabStatus, attachedTabId, serverUrl: SERVER_URL, lastServerMessageTime });
       break;
 
     case 'get_server_url':
