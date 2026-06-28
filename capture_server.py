@@ -191,6 +191,8 @@ async def main():
                         help="Bind address (default: 0.0.0.0, use 127.0.0.1 for localhost only)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"Port (default: {DEFAULT_PORT})")
+    parser.add_argument("--version", action="version", version="1.1.0",
+                        help="Show version and exit")
     args = parser.parse_args()
 
     server = CaptureServer()

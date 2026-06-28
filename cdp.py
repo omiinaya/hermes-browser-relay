@@ -2,11 +2,23 @@
 """
 CDP Client — Send CDP commands to Chrome via the relay server.
 
-Usage:
-    cdp Page.navigate '{"url": "https://example.com"}'
-    cdp Runtime.evaluate '{"expression": "document.title"}'
-    cdp Network.getCookies '{}' | jq .
-    cdp --watch
+Subcommands:
+    status              Check server & extension status
+    navigate <url>      Navigate to a URL
+    eval <expression>   Evaluate JavaScript in the page
+    screenshot          Capture a page screenshot
+    click <selector>    Click an element by CSS selector
+    type <sel> <text>   Type text into an input field
+    enter               Press Enter key
+    send <method> [params]   Send arbitrary CDP command
+    watch               Stream CDP events in real-time
+
+Usage examples:
+    cdp.py navigate '{"url": "https://example.com"}'
+    cdp.py eval 'document.title'
+    cdp.py click '#submit-btn'
+    cdp.py send Page.navigate '{"url": "https://example.com"}'
+    cdp.py watch
 """
 
 import argparse
