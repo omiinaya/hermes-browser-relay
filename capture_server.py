@@ -30,6 +30,8 @@ import websockets
 
 sys.stdout.reconfigure(line_buffering=True)
 
+VERSION = "1.1.0"
+
 CAPTURE_DIR = Path("/tmp/hermes-captures")
 CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
 DEFAULT_PORT = 9988
@@ -191,7 +193,7 @@ async def main():
                         help="Bind address (default: 0.0.0.0, use 127.0.0.1 for localhost only)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"Port (default: {DEFAULT_PORT})")
-    parser.add_argument("--version", action="version", version="1.1.0",
+    parser.add_argument("--version", action="version", version=f"capture-server v{VERSION}",
                         help="Show version and exit")
     args = parser.parse_args()
 
