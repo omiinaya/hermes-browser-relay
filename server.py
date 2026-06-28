@@ -7,6 +7,12 @@ Architecture:
     Hermes Agent ──HTTP POST /cdp──> server ──WS──> Chrome Extension ──CDP──> Chrome tab
     Hermes Agent <──HTTP response── server <──WS── Chrome Extension <──CDP── Chrome tab
 
+Features:
+    - WebSocket heartbeat (15s ping) to detect stale connections fast
+    - Stale pending_requests auto-sweep (entries older than 120s)
+    - Graceful shutdown on SIGTERM/SIGINT
+    - Event subscriber isolation (slow subscribers don't block the relay)
+
 Usage:
     python server.py          # Start on port 9223
     python server.py --port 9222
@@ -16,6 +22,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import time
 from json import JSONDecodeError
 from pathlib import Path
@@ -29,68 +36,142 @@ logging.basicConfig(
 )
 log = logging.getLogger("cdp-relay")
 
+# Heartbeat configuration
+HEARTBEAT_INTERVAL = 15       # Send ping every 15s
+HEARTBEAT_TIMEOUT = 45        # Consider disconnected after 45s of silence
+STALE_REQUEST_TIMEOUT = 120   # Auto-cancel pending requests older than 120s
+
 # State
 extension_ws = None
 extension_info = {}
-pending_requests = {}  # id -> asyncio.Future
+pending_requests = {}  # id -> {"future": asyncio.Future, "created_at": float}
 event_subscribers = []  # list of callbacks for forwarding events
 tab_id = None
+last_message_time = 0.0
+server_start_time = 0.0
+_heartbeat_task = None
+_stale_sweep_task = None
+
+
+def _now():
+    return time.time()
+
+
+async def heartbeat_loop():
+    """Periodic ping to detect stale WebSocket connections."""
+    global last_message_time
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        ws = extension_ws
+        if ws is None or ws.closed:
+            continue
+        try:
+            await ws.send_json({"type": "ping"})
+        except Exception:
+            log.warning("Heartbeat send failed — closing stale connection")
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            continue
+
+        # Check if we've heard anything within the timeout window
+        elapsed = _now() - last_message_time
+        if elapsed > HEARTBEAT_TIMEOUT:
+            log.warning(
+                f"No message from extension in {elapsed:.0f}s (> {HEARTBEAT_TIMEOUT}s) — closing"
+            )
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+
+async def stale_request_sweep():
+    """Periodically clean up pending CDP requests that have timed out."""
+    while True:
+        await asyncio.sleep(30)  # Check every 30s
+        now = _now()
+        stale_ids = [
+            cdp_id
+            for cdp_id, entry in list(pending_requests.items())
+            if now - entry["created_at"] > STALE_REQUEST_TIMEOUT
+        ]
+        for cdp_id in stale_ids:
+            entry = pending_requests.pop(cdp_id, None)
+            if entry and not entry["future"].done():
+                entry["future"].set_exception(
+                    Exception(f"Request {cdp_id} timed out after {STALE_REQUEST_TIMEOUT}s")
+                )
+                log.warning(f"Swept stale pending request {cdp_id} ({STALE_REQUEST_TIMEOUT}s)")
 
 
 async def handle_extension(request):
     """WebSocket handler for Chrome extension connection."""
-    global extension_ws, extension_info, tab_id
+    global extension_ws, extension_info, tab_id, last_message_time
 
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     extension_ws = ws
-    log.info("Extension connected")
+    last_message_time = _now()
+    remote = request.remote
+    log.info(f"Extension connected from {remote}")
 
     try:
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 data = json.loads(msg.data)
+                last_message_time = _now()
                 msg_type = data.get("type", "")
                 msg_id = data.get("id")
 
                 if msg_type == "hello":
-                    # Extension handshake
                     extension_info = data.get("info", {})
                     tab_id = data.get("tabId")
                     log.info(f"Extension attached to tab {tab_id}")
                     continue
 
+                if msg_type in ("pong", "keepalive"):
+                    # Heartbeat response / SW keepalive — already tracked via last_message_time
+                    continue
+
+                if msg_type == "ping":
+                    # Server-side ping from extension (if extension sends proactive pings)
+                    try:
+                        await ws.send_json({"type": "pong"})
+                    except Exception:
+                        pass
+                    continue
+
                 if msg_type == "event":
-                    # CDP event from Chrome
                     method = data.get("method", "")
                     log.debug(f"CDP event: {method}")
-                    # Forward to any event subscribers
-                    for cb in event_subscribers:
+                    # Forward to event subscribers with isolation
+                    for cb in list(event_subscribers):
                         try:
                             cb(data)
                         except Exception:
-                            log.exception("Event subscriber error in event handler")
+                            log.exception("Event subscriber error")
                     continue
-                
+
                 if msg_type == "webrequest":
-                    # WebRequest event from Chrome (global, all tabs)
                     url = data.get("url", "")
                     evt = data.get("event", "")
                     log.debug(f"WebRequest {evt}: {url[:100]}")
-                    # Forward to event subscribers
-                    for cb in event_subscribers:
+                    for cb in list(event_subscribers):
                         try:
                             cb(data)
                         except Exception:
-                            log.exception("Event subscriber error in webrequest handler")
+                            log.exception("Event subscriber error")
                     continue
 
                 if msg_id and msg_id in pending_requests:
-                    # Response to a pending HTTP /cdp request
-                    pending_requests.pop(msg_id).set_result(data)
+                    entry = pending_requests.pop(msg_id, None)
+                    if entry and not entry["future"].done():
+                        entry["future"].set_result(data)
                     continue
 
-                log.warning(f"Unhandled message: {data.get('type', 'unknown')}")
+                log.warning(f"Unhandled message type: {msg_type}")
 
             elif msg.type == web.WSMsgType.ERROR:
                 log.error(f"WebSocket error: {ws.exception()}")
@@ -98,14 +179,15 @@ async def handle_extension(request):
     except asyncio.CancelledError:
         pass
     finally:
-        log.info("Extension disconnected")
+        log.info(f"Extension disconnected (was from {remote})")
         extension_ws = None
         extension_info = {}
         tab_id = None
+        last_message_time = 0.0
         # Cancel all pending requests
-        for fut in pending_requests.values():
-            if not fut.done():
-                fut.set_exception(Exception("Extension disconnected"))
+        for entry in pending_requests.values():
+            if not entry["future"].done():
+                entry["future"].set_exception(Exception("Extension disconnected"))
         pending_requests.clear()
 
 
@@ -129,7 +211,7 @@ async def _process_cdp_command(body):
     # Create future for response
     loop = asyncio.get_running_loop()
     future = loop.create_future()
-    pending_requests[cdp_id] = future
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
 
     # Send CDP command via extension
     cmd = {"id": cdp_id, "method": method, "params": params}
@@ -141,7 +223,8 @@ async def _process_cdp_command(body):
             {"error": "Failed to send CDP command to extension"},
             status=502,
         )
-    log.info(f"CDP -> {method}")
+
+    log.info(f"CDP -> {method} (id={cdp_id})")
 
     # Wait for response with timeout
     timeout = body.get("timeout", 60)
@@ -150,7 +233,10 @@ async def _process_cdp_command(body):
         return web.json_response(result)
     except asyncio.TimeoutError:
         pending_requests.pop(cdp_id, None)
-        return web.json_response({"error": f"CDP command timed out after {timeout}s", "method": method}, status=504)
+        return web.json_response(
+            {"error": f"CDP command timed out after {timeout}s", "method": method},
+            status=504,
+        )
 
 
 async def handle_cdp_post(request):
@@ -164,12 +250,17 @@ async def handle_cdp_post(request):
 
 async def handle_status(request):
     """HTTP endpoint: server status."""
+    now = _now()
+    uptime = now - server_start_time
     return web.json_response({
+        "version": "1.1.0",
         "extension_connected": extension_ws is not None and not extension_ws.closed,
         "tab_id": tab_id,
         "extension_info": extension_info,
         "pending_requests": len(pending_requests),
-        "uptime": time.time() - server_start_time,
+        "uptime": uptime,
+        "uptime_str": f"{uptime:.0f}s",
+        "last_message_ago": (now - last_message_time) if last_message_time > 0 else None,
     })
 
 
@@ -190,7 +281,6 @@ async def handle_cdp_get(request):
         if url:
             params["url"] = url
         body = {"method": method, "params": params}
-        # Forward to POST handler via shared logic
         return await _process_cdp_command(body)
     return web.json_response({"error": "Use GET ?method=Page.navigate&url=... or POST /cdp"}, status=400)
 
@@ -209,8 +299,8 @@ async def handle_events_sse(request):
     )
     await response.prepare(request)
 
-    queue = asyncio.Queue()
-    
+    queue = asyncio.Queue(maxsize=500)
+
     def subscriber(data):
         try:
             queue.put_nowait(data)
@@ -222,22 +312,51 @@ async def handle_events_sse(request):
         while True:
             data = await queue.get()
             await response.write(f"data: {json.dumps(data)}\n\n".encode())
-    except (asyncio.CancelledError, ConnectionResetError):
+    except (asyncio.CancelledError, ConnectionResetError, ConnectionAbortedError):
         pass
     finally:
-        event_subscribers.remove(subscriber)
+        try:
+            event_subscribers.remove(subscriber)
+        except ValueError:
+            pass
 
     return response
 
 
-server_start_time = time.time()
+async def shutdown():
+    """Clean shutdown — close WS, cancel pending, stop background tasks."""
+    log.info("Shutting down...")
+
+    if _heartbeat_task and not _heartbeat_task.done():
+        _heartbeat_task.cancel()
+
+    if _stale_sweep_task and not _stale_sweep_task.done():
+        _stale_sweep_task.cancel()
+
+    ws = extension_ws
+    if ws and not ws.closed:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+    for entry in pending_requests.values():
+        if not entry["future"].done():
+            entry["future"].set_exception(Exception("Server shutting down"))
+    pending_requests.clear()
+
+    log.info("Shutdown complete")
 
 
 async def main():
+    global server_start_time, _heartbeat_task, _stale_sweep_task
+
     parser = argparse.ArgumentParser(description="CDP Relay Server")
     parser.add_argument("--port", type=int, default=9223, help="Server port (default: 9223)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     args = parser.parse_args()
+
+    server_start_time = _now()
 
     app = web.Application()
     app.router.add_get("/status", handle_status)
@@ -249,18 +368,19 @@ async def main():
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v1.0             ║")
+    print("  ║     CDP Relay Server v1.1.0           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
-    print(f"  Extension WS: ws://127.0.0.1:{args.port}/ws")
-    print(f"  CDP API:      http://127.0.0.1:{args.port}/cdp")
-    print(f"  Status:       http://127.0.0.1:{args.port}/status")
-    print(f"  Events (SSE): http://127.0.0.1:{args.port}/events")
+    print(f"  Extension WS: ws://{args.host}:{args.port}/ws")
+    print(f"  CDP API:      http://{args.host}:{args.port}/cdp")
+    print(f"  Status:       http://{args.host}:{args.port}/status")
+    print(f"  Events (SSE): http://{args.host}:{args.port}/events")
     print()
     print("  Install extension → chrome://extensions/ → Load unpacked")
     print(f"  → {Path(__file__).parent / 'extension'}")
     print()
     print("  Then: attach to a tab, then POST commands to /cdp")
+    print(f"  Heartbeat: every {HEARTBEAT_INTERVAL}s, timeout at {HEARTBEAT_TIMEOUT}s")
     print()
 
     runner = web.AppRunner(app)
@@ -271,12 +391,37 @@ async def main():
     print(f"  Listening on http://{args.host}:{args.port}")
     print()
 
+    # Start background tasks
+    _heartbeat_task = asyncio.create_task(heartbeat_loop())
+    _stale_sweep_task = asyncio.create_task(stale_request_sweep())
+
+    # Set up signal handlers for graceful shutdown
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        log.info("Received termination signal")
+        asyncio.create_task(shutdown())
+        asyncio.create_task(runner.cleanup())
+        stop_event.set()
+
     try:
-        await asyncio.Future()
-    except KeyboardInterrupt:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                pass
+    except Exception:
         pass
-    finally:
+
+    try:
+        await stop_event.wait()
+    except KeyboardInterrupt:
+        log.info("Keyboard interrupt")
+        await shutdown()
         await runner.cleanup()
+
+    log.info("Server stopped")
 
 
 if __name__ == "__main__":
