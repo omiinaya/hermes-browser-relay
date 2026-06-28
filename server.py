@@ -264,7 +264,6 @@ async def handle_status(request):
     })
 
 
-
 async def handle_cdp_get(request):
     """HTTP endpoint: convenience GET with query param method."""
     method = request.query.get("method")
