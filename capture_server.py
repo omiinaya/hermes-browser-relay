@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Hermes Traffic Capture Server (v1.1.0)
-Receives browser events via WebSocket from the Chrome extension
-and writes them to a JSONL file.
+Hermes Traffic Capture Server (v1.2.0)
+Receives browser events via WebSocket from the Chrome extension,
+writes to JSONL, and maintains an in-memory event buffer for
+real-time querying via the CDP relay server's /recent endpoint.
 
 Handles event types from browser-relay extension:
   - webrequest (all phases: beforeRequest, completed, error, etc.)
@@ -20,9 +21,11 @@ Usage:
 import argparse
 import asyncio
 import json
+import logging
 import signal
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,20 +33,27 @@ import websockets
 
 sys.stdout.reconfigure(line_buffering=True)
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 CAPTURE_DIR = Path("/tmp/hermes-captures")
 CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
 DEFAULT_PORT = 9988
-HEARTBEAT_INTERVAL = 15       # Send ping every 15s
-HEARTBEAT_TIMEOUT = 45        # Disconnect if no message for 45s
+HEARTBEAT_INTERVAL = 15
+HEARTBEAT_TIMEOUT = 45
+EVENT_BUFFER_SIZE = 1000    # Full event buffer (feeds /recent?limit=N)
+NAV_BUFFER_SIZE = 200       # Slim buffer of interesting events only
 
 
 class CaptureServer:
     def __init__(self):
-        self.clients = {}  # websocket -> {"remote": addr, "last_message": float}
+        self.clients = {}
         self.event_count = 0
         self.file_handle = None
+
+        # In-memory event buffers for real-time querying
+        self.full_buffer = deque(maxlen=EVENT_BUFFER_SIZE)
+        self.nav_buffer = deque(maxlen=NAV_BUFFER_SIZE)
+
         self.stats = {
             'webrequest': 0,
             'downloads': 0,
@@ -53,25 +63,38 @@ class CaptureServer:
             'responses': 0,
         }
 
+    # ------------------------------------------------------------------
+    # Server lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self, host="0.0.0.0", port=DEFAULT_PORT):
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Rotate old capture files (keep last 5)
         old_files = sorted(CAPTURE_DIR.glob("capture*.jsonl"), reverse=True)
         for f in old_files[4:]:
             f.unlink(missing_ok=True)
 
         self.file_handle = open(CAPTURE_FILE, 'a')
 
-        print(f"📡 Capture server starting on ws://{host}:{port}")
+        print(f"📡 Capture server v{VERSION} starting on ws://{host}:{port}")
         print(f"📁 Writing to: {CAPTURE_FILE}")
-        local = "localhost" if host == "0.0.0.0" else host
-        print(f"🌐 Accessible at ws://{local}:{port} (local)")
+        print(f"📊 Events buffer: {EVENT_BUFFER_SIZE} (nav: {NAV_BUFFER_SIZE})")
+        print()
 
-        async with websockets.serve(self.handle_client, host, port,
-                                    ping_interval=HEARTBEAT_INTERVAL,
-                                    ping_timeout=HEARTBEAT_TIMEOUT):
+        log = logging.getLogger('capture')
+        log.warning("DEPRECATED: Capture functionality has been merged into the CDP relay server (server.py :9223).")
+        log.warning("This standalone capture server is kept for backward compatibility. Use :9223/recent instead.")
+
+        async with websockets.serve(
+            self.handle_client, host, port,
+            ping_interval=HEARTBEAT_INTERVAL,
+            ping_timeout=HEARTBEAT_TIMEOUT,
+        ):
             await asyncio.Future()
+
+    # ------------------------------------------------------------------
+    # WebSocket client handler
+    # ------------------------------------------------------------------
 
     async def handle_client(self, websocket):
         remote = websocket.remote_address
@@ -95,8 +118,38 @@ class CaptureServer:
             self.clients.pop(websocket, None)
             print(f"🔌 Client disconnected: {remote}")
 
+    # ------------------------------------------------------------------
+    # Event processing
+    # ------------------------------------------------------------------
+
+    INTERESTING_EVENTS = frozenset({
+        "tab", "download", "response_body",
+        "webrequest",
+    })
+
+    INTERESTING_WEBREQUEST = frozenset({
+        "completed", "error",
+    })
+
+    INTERESTING_CDP = frozenset({
+        "Network.responseReceived",
+    })
+
+    def _is_interesting(self, msg_type: str, msg: dict) -> bool:
+        """Determine if an event is 'interesting' enough for the nav buffer."""
+        if msg_type in ("tab", "download", "response_body"):
+            return True
+        if msg_type == "webrequest":
+            ev = msg.get("event", "")
+            if ev in self.INTERESTING_WEBREQUEST:
+                return True
+        if msg_type == "event":
+            method = msg.get("method", "")
+            if method in self.INTERESTING_CDP:
+                return True
+        return False
+
     async def process_message(self, msg):
-        # Add timestamp if not present
         if 'ts' not in msg:
             msg['_received'] = datetime.now(timezone.utc).timestamp() * 1000
 
@@ -106,7 +159,7 @@ class CaptureServer:
         if msg_type in ('hello', 'pong', 'ping', 'keepalive'):
             return
 
-        # Response body events - write and print preview
+        # Response body events
         if msg_type == 'response_body':
             await self.write_event(msg)
             url = msg.get('url', '')
@@ -118,7 +171,7 @@ class CaptureServer:
             self.stats['responses'] += 1
             return
 
-        # CDP events - write but be selective about printing
+        # CDP events
         if msg_type == 'event':
             await self.write_event(msg)
             self.stats['cdp_events'] += 1
@@ -129,11 +182,10 @@ class CaptureServer:
                 print(f"  📡 CDP: {method} {url[:100]}")
                 self.stats['responses'] += 1
             elif 'Network.requestWillBeSent' in method:
-                # Too verbose - skip printing
-                self.stats['webrequest'] += 1
+                pass  # too verbose
             return
 
-        # Batch mode (from custom extensions)
+        # Batch mode
         if msg.get('action') == 'batch':
             events = msg.get('events', [])
             for event in events:
@@ -155,11 +207,22 @@ class CaptureServer:
         elif msg_type == 'tab':
             self.stats['tabs'] += 1
 
+    # ------------------------------------------------------------------
+    # Event writing (file + buffers)
+    # ------------------------------------------------------------------
+
     async def write_event(self, event):
         line = json.dumps(event, default=str) + '\n'
         self.file_handle.write(line)
         self.file_handle.flush()
         self.event_count += 1
+
+        # Push to in-memory buffers for real-time querying
+        self.full_buffer.append(event)
+
+        msg_type = event.get('type', event.get('action', '?'))
+        if self._is_interesting(msg_type, event):
+            self.nav_buffer.append(event)
 
         # Live summary
         etype = event.get('eventType', event.get('type', event.get('action', '?')))
@@ -199,7 +262,7 @@ async def main():
 
     server = CaptureServer()
 
-    print("Hermes Traffic Capture Server v1.1.0")
+    print(f"Hermes Traffic Capture Server v{VERSION}")
     print("=" * 50)
     print(f"  Binding: {args.bind}:{args.port}")
     print()

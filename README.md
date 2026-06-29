@@ -2,7 +2,7 @@
 
 A Chrome DevTools Protocol relay server that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 1.1.0** — Features heartbeat keepalive, exponential backoff reconnect, tab-switch auto-reattach, stale request sweep, and graceful shutdown.
+**Version 1.2.0** — Features heartbeat keepalive, exponential backoff reconnect, tab-switch auto-reattach, stale request sweep, and graceful shutdown.
 
 ## Architecture
 
@@ -12,22 +12,25 @@ A Chrome DevTools Protocol relay server that bridges remote browser control betw
 │  Hermes      │                │  Relay       │                │  Extension   │          │ Chrome │
 │  Agent       │ <───────────── │  Server      │ <───────────── │  (Service    │ <─────── │  Tab   │
 │              │   HTTP resp    │  :9223       │   WS resp      │   Worker)    │   CDP    │        │
-└──────────────┘                └──────────────┘                └──────────────┘          └────────┘
-                                        │                              │
-                                        │ WebSocket                    │ WebSocket
-                                        │ :9988                        │ :9988
-                                        └──────────┬───────────────────┘
-                                                   │
-                                          ┌────────┴────────┐
-                                          │  Capture Server  │
-                                          │  :9988           │
-                                          │  → capture.jsonl │
-                                          └─────────────────┘
+└──────────────┘   + /recent    └──────┬───────┘                └──────────────┘          └────────┘
+               curl /cdp         │
+                                  │ in-memory buffer
+                                  │ /tmp/hermes-captures/capture.jsonl
+                                  │
+                          ┌──────┴──────┐
+                          │  Event       │
+                          │  Capture     │
+                          │  (built-in)  │
+                          └─────────────┘
 ```
 
-Two servers:
-- **CDP Relay** (`server.py`, port `:9223`) — sends CDP commands to Chrome, responds via HTTP
-- **Capture Server** (`capture_server.py`, port `:9988`) — receives browser events (web requests, downloads, navigation) and writes to JSONL
+**CDP Relay** (`server.py`, port `:9223`) — sends CDP commands to Chrome, responds via HTTP, and captures browser events (web requests, downloads, navigation, CDP events) to an in-memory buffer + JSONL file.
+- **`GET /recent?limit=20&mode=nav`** — returns recent captured events from the in-memory buffer
+- **`GET /recent?raw=true`** — returns raw JSONL format for Unix pipe chaining
+- **`GET /events`** — SSE streaming endpoint for real-time event monitoring
+- **`GET /stats`** — server status
+
+**Capture Server** (`capture_server.py`, port `:9988`) — legacy standalone logging server (optional, captured events are also available via the relay server)
 
 ## What's New in v1.1.0
 

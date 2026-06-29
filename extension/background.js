@@ -124,10 +124,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
-  console.log('[CDP] Detached from tab', source.tabId, '- reason:', reason);
+  console.debug('[CDP] Detached from tab', source.tabId, '- reason:', reason);
   attachedTabId = null;
   attached = false;
   tabStatus = 'detached';
+  bodyTargets.clear();
   updateBadge();
 
   // Start persistent reattach watcher — keeps trying every 5s
@@ -224,11 +225,11 @@ function connectWS() {
   connectionStatus = 'connecting';
   updateBadge();
 
-  console.log('[CDP] Connecting to', SERVER_URL);
+  console.debug('[CDP] Connecting to', SERVER_URL);
   ws = new WebSocket(SERVER_URL);
 
   ws.onopen = () => {
-    console.log('[CDP] WebSocket connected to ' + SERVER_URL);
+    console.debug('[CDP] WebSocket connected to ' + SERVER_URL);
     connectionStatus = 'connected';
     reconnectDelay = 1000; // Reset backoff on successful connect
     updateBadge();
@@ -262,7 +263,7 @@ function connectWS() {
   };
 
   ws.onclose = (event) => {
-    console.log('[CDP] WebSocket disconnected (code:', event.code, 'reason:', event.reason || 'none', ')');
+    console.debug('[CDP] WebSocket disconnected (code:', event.code, 'reason:', event.reason || 'none', ')');
     connectionStatus = 'disconnected';
     lastServerMessageTime = null;
     updateBadge();
@@ -283,7 +284,7 @@ function scheduleReconnect() {
   if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
 
   const delay = reconnectDelay;
-  console.log('[CDP] Reconnecting in', delay, 'ms');
+  console.debug('[CDP] Reconnecting in', delay, 'ms');
   wsReconnectTimer = setTimeout(connectWS, delay);
 
   // Exponential backoff: 1s → 3s → 9s → 27s → 60s (cap)
@@ -332,7 +333,7 @@ function stopClientHeartbeat() {
 
 function startReattachWatcher() {
   stopReattachWatcher();
-  console.log('[CDP] Starting reattach watcher (every 5s)');
+  console.debug('[CDP] Starting reattach watcher (every 5s)');
   reattachWatcherTimer = setInterval(() => {
     if (attached || connectionStatus !== 'connected') {
       stopReattachWatcher();
@@ -531,7 +532,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
       return;
     }
 
-    console.log('[CDP] Tab switched to', newTabId, '-', tab.url);
+    console.debug('[CDP] Tab switched to', newTabId, '-', tab.url);
     attachToTab(newTabId);
   });
 });

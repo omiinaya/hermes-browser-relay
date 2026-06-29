@@ -22,11 +22,15 @@ from mcp.types import Tool, TextContent, ImageContent
 # ---------------------------------------------------------------------------
 
 CDP_SERVER = os.environ.get("CDP_RELAY_URL", "http://127.0.0.1:9223")
+CAPTURE_SERVER = os.environ.get("CAPTURE_SERVER_URL", "")  # Legacy, kept for compat
 CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
 
 # Shared HTTP connection for keep-alive
 _cdp_opener = urllib.request.build_opener()
 _cdp_opener.addheaders = [("Content-Type", "application/json")]
+
+# Separate opener for capture server (plain GET requests)
+_capture_opener = urllib.request.build_opener()
 
 
 def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
@@ -69,6 +73,18 @@ def _parse_result(result: dict) -> Any:
             return {"error": f"JS exception: {exc.get('text', str(exc))}"}
         return result["result"]["result"]
     return result.get("result", result)
+
+
+def _query_capture(path: str, timeout: int = 5) -> dict:
+    """Query the relay server's /recent endpoint. Returns parsed JSON or error dict."""
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}{path}")
+        with _capture_opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        return {"error": f"Relay server unreachable: {e.reason}", "hint": "Is server.py running on :9223?"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +176,17 @@ async def list_tools() -> list[Tool]:
                     "params": {"type": "object", "description": "CDP parameters as JSON object"},
                 },
                 "required": ["method"],
+            },
+        ),
+        Tool(
+            name="browser_recent_events",
+            description="Fetch recent browser events (navigations, downloads, requests) from the capture server buffer. Use this to check what the browser has been doing — no need to navigate to find out. mode='nav' returns only important events (navigations, downloads, errors), mode='all' returns everything including CDP noise.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 200)", "default": 20},
+                    "mode": {"type": "string", "description": "'nav' for interesting events only, 'all' for everything (default: 'nav')", "default": "nav", "enum": ["nav", "all"]},
+                },
             },
         ),
     ]
@@ -254,6 +281,32 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             params = arguments.get("params", {})
             result = _cdp(method, params)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "browser_recent_events":
+            limit = min(arguments.get("limit", 20), 200)
+            mode = arguments.get("mode", "nav")
+            result = _query_capture(f"/recent?limit={limit}&mode={mode}")
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            ev_count = result.get("count", 0)
+            events = result.get("events", [])
+            lines = [f"📊 {ev_count} recent events (of {result.get('total', '?')} total):", ""]
+            for e in events:
+                ts = e.get("_received", "")
+                etype = e.get("type", e.get("eventType", "?"))
+                if etype == "tab":
+                    lines.append(f"  🏁 NAV: {e.get('url', '')[:120]}")
+                elif etype == "download":
+                    lines.append(f"  📥 DOWNLOAD {e.get('event', '')}: {e.get('filename', e.get('url', ''))[:120]}")
+                elif etype == "webrequest":
+                    ev = e.get("event", "")
+                    if ev in ("completed", "error"):
+                        lines.append(f"  🌐 {ev}: {e.get('method','?')} {e.get('statusCode','?')} {e.get('url','')[:100]}")
+                elif etype == "response_body":
+                    lines.append(f"  📄 BODY: {e.get('url', '')[:100]}")
+            if len(lines) <= 2:
+                lines.append("  (no events yet — the capture server is running but may not have received anything)")
+            return [TextContent(type="text", text="\n".join(lines))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
