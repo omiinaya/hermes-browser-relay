@@ -349,6 +349,32 @@ TOOL_SCHEMAS = [
             "required": ["patterns"],
         },
     },
+    {
+        "name": "browser_refresh",
+        "description": "Reload the current page. Optionally bypass cache with hardReload=true.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hard_reload": {"type": "boolean", "description": "Bypass cache (default: false)", "default": False},
+            },
+        },
+    },
+    {
+        "name": "browser_forward",
+        "description": "Navigate forward in browser history.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "browser_get_title",
+        "description": "Get the current page title.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 
@@ -845,6 +871,21 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 if state: lines.append(f"     State: {state}")
                 if total: lines.append(f"     Size: {total} bytes")
             return "\n".join(lines)
+
+        elif name == "browser_refresh":
+            hard = args.get("hard_reload", False)
+            result = _cdp("Page.reload", {"ignoreCache": hard})
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            return "🔄 Page reloaded" + (" (hard)" if hard else "")
+
+        elif name == "browser_forward":
+            _cdp("Runtime.evaluate", {"expression": "window.history.forward()"})
+            return "Navigated forward"
+
+        elif name == "browser_get_title":
+            title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
+            return f"📄 {title}"
 
         elif name == "browser_block_patterns":
             patterns = args.get("patterns", [])
