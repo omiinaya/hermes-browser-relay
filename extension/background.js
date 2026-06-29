@@ -22,6 +22,10 @@ let lastServerMessageTime = null;
 let clientHeartbeatTimer = null;
 const CLIENT_HEARTBEAT_INTERVAL = 20000; // 20s
 
+// Reattach watcher — keeps trying until attached or disconnected
+const REATTACH_INTERVAL = 5000; // 5s
+let reattachWatcherTimer = null;
+
 // ====== Safe Send Helper ======
 
 function safeSend(data) {
@@ -126,20 +130,10 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   tabStatus = 'detached';
   updateBadge();
 
-  // Auto-reattempt with exponential backoff
+  // Start persistent reattach watcher — keeps trying every 5s
+  // until we successfully attach to a tab or the WS disconnects
   if (connectionStatus === 'connected') {
-    const reattachDelay = Math.min((reconnectDelay || 1000), 30000);
-    console.log(`[CDP] Will attempt reattach in ${reattachDelay}ms`);
-    setTimeout(() => {
-      if (!attached && connectionStatus === 'connected') {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs && tabs[0] && tabs[0].id && tabs[0].url &&
-              !tabs[0].url.startsWith('chrome://') && !tabs[0].url.startsWith('edge://') && !tabs[0].url.startsWith('about:')) {
-            attachToTab(tabs[0].id);
-          }
-        });
-      }
-    }, reattachDelay);
+    startReattachWatcher();
   }
 });
 
@@ -250,6 +244,11 @@ function connectWS() {
 
     // Start client-side heartbeat as fallback
     startClientHeartbeat();
+
+    // If WS reconnected but we're not attached, start reattach watcher
+    if (!attached) {
+      startReattachWatcher();
+    }
   };
 
   ws.onmessage = (event) => {
@@ -304,6 +303,7 @@ function disconnectWS() {
   reconnectDelay = 1000;
   connectionStatus = 'disconnected';
   stopClientHeartbeat();
+  stopReattachWatcher();
   cancelKeepalive();
   updateBadge();
 }
@@ -325,6 +325,31 @@ function stopClientHeartbeat() {
   if (clientHeartbeatTimer) {
     clearInterval(clientHeartbeatTimer);
     clientHeartbeatTimer = null;
+  }
+}
+
+// ====== Reattach Watcher ======
+
+function startReattachWatcher() {
+  stopReattachWatcher();
+  console.log('[CDP] Starting reattach watcher (every 5s)');
+  reattachWatcherTimer = setInterval(() => {
+    if (attached || connectionStatus !== 'connected') {
+      stopReattachWatcher();
+      return;
+    }
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0] && tabs[0].id) {
+        attachToTab(tabs[0].id);
+      }
+    });
+  }, REATTACH_INTERVAL);
+}
+
+function stopReattachWatcher() {
+  if (reattachWatcherTimer) {
+    clearInterval(reattachWatcherTimer);
+    reattachWatcherTimer = null;
   }
 }
 
@@ -440,6 +465,9 @@ async function attachToTab(tabId) {
         });
       }
 
+      // Stop reattach watcher — we're attached
+      stopReattachWatcher();
+
       resolve({ success: true, tabId });
     });
   });
@@ -457,6 +485,7 @@ async function detach() {
       attached = false;
       tabStatus = 'detached';
       updateBadge();
+      stopReattachWatcher();
       resolve({ success: true });
     });
   });
