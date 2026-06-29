@@ -13,6 +13,7 @@ import io
 import base64
 import urllib.request
 import urllib.error
+import threading
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
@@ -104,6 +105,50 @@ def _query_capture(path: str, timeout: int = 5) -> dict:
         return {"error": f"Relay server unreachable: {e.reason}", "hint": "Is server.py running on :9223?"}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# MCP Connection Watchdog
+# ---------------------------------------------------------------------------
+
+_connection_ok = False
+_watchdog_running = False
+
+
+def _check_connection() -> bool:
+    """Ping the relay server /status endpoint. Returns True if reachable."""
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/status")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            ok = data.get("extension_connected", False) and data.get("tab_id") is not None
+            return ok
+    except Exception:
+        return False
+
+
+def _watchdog_loop():
+    """Background thread: periodically check relay health and log status changes."""
+    global _connection_ok, _watchdog_running
+    import time as _t
+    _watchdog_running = True
+    was_ok = False
+    while _watchdog_running:
+        ok = _check_connection()
+        if ok and not was_ok:
+            print(f"[watchdog] CDP relay connected (tab attached)", flush=True)
+        elif not ok and was_ok:
+            print(f"[watchdog] CDP relay disconnected — will retry...", flush=True)
+        _connection_ok = ok
+        was_ok = ok
+        _t.sleep(15)
+
+
+def start_watchdog():
+    """Start the connection watchdog in a daemon thread."""
+    import threading as _thr
+    t = _thr.Thread(target=_watchdog_loop, daemon=True)
+    t.start()
 
 
 # ---------------------------------------------------------------------------
@@ -485,9 +530,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 req = urllib.request.Request(f"{CDP_SERVER}/status")
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     status = json.loads(resp.read().decode())
+                status["watchdog"] = {
+                    "connected": _connection_ok,
+                    "running": _watchdog_running,
+                }
                 return [TextContent(type="text", text=json.dumps(status, indent=2))]
             except Exception as e:
-                return [TextContent(type="text", text=f"CDP relay unreachable: {e}")]
+                return [TextContent(type="text", text=f"CDP relay unreachable: {e}\nWatchdog: {'running' if _watchdog_running else 'stopped'} (last check: {_connection_ok})")]
 
         elif name == "browser_send_cdp":
             method = arguments["method"]
@@ -1033,6 +1082,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 # ---------------------------------------------------------------------------
 
 def main():
+    import asyncio
+    start_watchdog()
     async def run():
         async with stdio_server() as (read_stream, write_stream):
             await app.run(read_stream, write_stream, app.create_initialization_options())
