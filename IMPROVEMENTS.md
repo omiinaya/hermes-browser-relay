@@ -1,18 +1,17 @@
-1|# Browser Relay — Improvement Backlog
-2|
-3|---
-4|
-## Status: PENDING
+# Browser Relay — Improvement Backlog
 
-### P11 — Multi-tab attach support
-Support attaching to tab N while listing all open tabs. Currently one tab at a time.
-Files: server.py, mcp-server/server.py, plugins/browser-relay/__init__.py, extension/background.js
-Difficulty: Hard
-Est: 45 min
+---
+
+## Status: ALL COMPLETED 🎉
+
+All 11 items from the initial backlog have been implemented. See Recently Completed below.
 
 ---
 
 ## Recently Completed
+
+### P11 — Multi-tab attach support
+Support attaching to multiple tabs simultaneously. Replaced single `attachedTabId` with `attachments Map`. Additive attach, targeted detach, tab-routed CDP commands, badge shows count.
 
 ### P10 — browser_block_patterns
 Network request blocking via Chrome's declarativeNetRequest API (MV3 native). Uses `chrome.declarativeNetRequest.updateDynamicRules()` to add/remove URL-filter rules. Supports glob-style patterns: `*.css`, `*analytics*`, `/path/*`. Background.js stores blocked patterns and creates DNR rules; relay server has `POST/GET /block/patterns` endpoints; tools at both MCP and plugin layers.

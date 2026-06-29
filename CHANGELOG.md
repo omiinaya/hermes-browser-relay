@@ -3,6 +3,12 @@
 ## v1.4.0 (2026-06-29)
 
 ### Added
+- Multi-tab attach support — extension now attaches to multiple tabs simultaneously
+- `browser_attach_tab` / `browser_detach_tab` / `browser_list_attachments` tools
+- Tab-targeted CDP commands via `POST /cdp/{tabId}` and `tabId` field
+- `browser_refresh` — reload page with optional hard reload
+- `browser_forward` — navigate forward in history
+- `browser_get_title` — quick page title getter
 - `browser_list_tabs` / `browser_switch_tab` — list all open tabs and switch by ID or keyword
 - `browser_get_cookies` / `browser_clear_cookies` — read and clear cookies via CDP
 - `browser_get_downloads` — query download events from capture buffer
