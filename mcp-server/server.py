@@ -300,6 +300,18 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="browser_select_option",
+            description="Select an <option> in a <select> dropdown by visible text text match.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the <select> element (e.g. '#country', 'select[name=state]')"},
+                    "text": {"type": "string", "description": "Visible text of the option to select (case-insensitive, exact match)"},
+                },
+                "required": ["selector", "text"],
+            },
+        ),
+        Tool(
             name="browser_back",
             description="Navigate back to the previous page in browser history.",
             inputSchema={
@@ -667,6 +679,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
             _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
             return [TextContent(type="text", text=f"Pressed {key}")]
+
+        elif name == "browser_select_option":
+            selector = arguments["selector"]
+            text = arguments["text"]
+            select_js = f"""
+            (() => {{
+                const select = document.querySelector({json.dumps(selector)});
+                if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
+                if (select.tagName !== 'SELECT') return {{ error: 'Element is not a <select>' }};
+                const options = Array.from(select.options);
+                const q = {json.dumps(text)}.trim().toLowerCase();
+                const target = options.find(o => (o.text||'').trim().toLowerCase() === q);
+                if (!target) return {{ error: 'Option not found with text: ' + {json.dumps(text)} }};
+                select.value = target.value;
+                select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                select.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
+            }})()
+            """
+            result = _cdp("Runtime.evaluate", {"expression": select_js, "returnByValue": True})
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
+            return [TextContent(type="text", text=f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'")]
 
         elif name == "browser_back":
             result = _cdp("Runtime.evaluate", {"expression": "window.history.back()"})

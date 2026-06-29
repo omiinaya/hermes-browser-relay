@@ -252,6 +252,18 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "browser_select_option",
+        "description": "Select an <option> in a <select> dropdown by visible text (case-insensitive).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the <select> element"},
+                "text": {"type": "string", "description": "Visible text of the option to select"},
+            },
+            "required": ["selector", "text"],
+        },
+    },
+    {
         "name": "browser_back",
         "description": "Navigate back to the previous page in browser history.",
         "parameters": {
@@ -597,6 +609,30 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_back":
             _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
             return "Navigated back"
+
+        elif name == "browser_select_option":
+            selector = args["selector"]
+            text = args["text"]
+            select_js = f"""
+            (() => {{
+                const select = document.querySelector({json.dumps(selector)});
+                if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
+                if (select.tagName !== 'SELECT') return {{ error: 'Element is not a <select>' }};
+                const options = Array.from(select.options);
+                const q = {json.dumps(text)}.trim().toLowerCase();
+                const target = options.find(o => (o.text||'').trim().toLowerCase() === q);
+                if (!target) return {{ error: 'Option not found with text: ' + {json.dumps(text)} }};
+                select.value = target.value;
+                select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                select.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
+            }})()
+            """
+            result = _cdp("Runtime.evaluate", {"expression": select_js, "returnByValue": True})
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return f"Error: {value['error']}"
+            return f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'"
 
         elif name == "browser_screenshot_annotated":
             annotate_js = f"""
