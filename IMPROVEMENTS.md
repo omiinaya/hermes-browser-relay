@@ -4,11 +4,12 @@
 
 ## Status: PENDING
 
-### P4 — Annotated screenshot with Pillow overlay
+### P4 — Annotated screenshot with Pillow overlay ✅
 Draw `[1]`, `[2]` labels directly onto the PNG screenshot using Pillow, instead of returning them as text next to the image. Would make annotated screenshots instantly visually useful.
 Files: mcp-server/server.py, plugins/browser-relay/__init__.py
 Difficulty: Medium
 Est: 20 min
+*Implemented: Added `io`, `base64` imports and PIL-based overlay rendering to `browser_screenshot_annotated` in both mcp-server/server.py and plugins/browser-relay/__init__.py. Decodes the PNG, draws yellow-background `[ref]` labels with element highlight rectangles, composites onto the original, re-encodes, and returns as ImageContent with a text element listing. Plugin also saves to MEDIA path for Hermes display.*
 
 ### P5 — browser_switch_tab
 List open tabs and switch to one by index, URL pattern, or title. The extension follows tab-switch events but there's no programmatic way to say "switch to the tab with Stripe in the URL".

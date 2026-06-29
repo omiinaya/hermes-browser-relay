@@ -9,9 +9,13 @@ Protocol: stdio MCP — read JSON-RPC from stdin, write to stdout.
 """
 import json
 import os
+import io
+import base64
 import urllib.request
 import urllib.error
 from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------------------
 # Interactive element CSS selectors for snapshot
@@ -642,7 +646,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             return [TextContent(type="text", text=page_text[:40000])]
 
         elif name == "browser_screenshot_annotated":
-            # First get the snapshot elements with coords, then take screenshot, then overlay numbers
+            # Get interactive elements with their center coordinates
             annotate_js = f"""
             (() => {{
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
@@ -660,7 +664,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                     const txt = (el.textContent||'').trim().substring(0, 40);
                     const role = el.getAttribute('role') || '';
                     const label = txt || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || role || el.tagName;
-                    items.push({{ ref: idx, text: label.substring(0, 30), x: Math.round(r.x + r.width/2), y: Math.round(r.top + 8) }});
+                    items.push({{ ref: idx, text: label.substring(0, 30), x: Math.round(r.x + r.width/2), y: Math.round(r.top + 8), left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }});
                 }});
                 return items.slice(0, 50);
             }})()
@@ -668,21 +672,86 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             annotations = _parse_result(_cdp("Runtime.evaluate", {"expression": annotate_js, "returnByValue": True}))
             if not isinstance(annotations, list) or len(annotations) == 0:
                 return [TextContent(type="text", text="No interactive elements found on screen")]
+
             # Take screenshot
             shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
             if "error" in shot:
                 return [TextContent(type="text", text=f"Screenshot error: {shot['error']}")]
-            data = shot.get("result", {}).get("data", "")
-            if not data:
+            raw_data = shot.get("result", {}).get("data", "")
+            if not raw_data:
                 return [TextContent(type="text", text="No screenshot data")]
-            # Return screenshot + annotation list as text
-            lines = ["📸 Annotated screenshot — interactive elements:", ""]
-            for a in annotations:
-                lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
-            return [
-                ImageContent(type="image", data=data, mimeType="image/png"),
-                TextContent(type="text", text="\n".join(lines)),
-            ]
+
+            # Decode screenshot and overlay labels using Pillow
+            try:
+                img_bytes = base64.b64decode(raw_data)
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+                draw = ImageDraw.Draw(img)
+
+                # Try to load a nicer font, fall back to default
+                font_size = max(14, img.width // 80)
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+                except (IOError, OSError):
+                    font = ImageFont.load_default()
+
+                # Draw a semi-transparent overlay layer for label backgrounds
+                overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                overlay_draw = ImageDraw.Draw(overlay)
+
+                for a in annotations:
+                    ref = str(a.get("ref", "?"))
+                    cx, cy = a.get("x", 0), a.get("y", 0)
+                    left = a.get("left", cx - 10)
+                    top = a.get("top", cy - 10)
+
+                    # Measure text
+                    bbox = draw.textbbox((0, 0), f"[{ref}]", font=font)
+                    tw = bbox[2] - bbox[0]
+                    th = bbox[3] - bbox[1]
+
+                    # Label background
+                    label_x = left
+                    label_y = top - th - 4
+                    padding = 4
+                    overlay_draw.rectangle(
+                        [label_x - padding, label_y - padding, label_x + tw + padding, label_y + th + padding],
+                        fill=(255, 200, 0, 220),
+                    )
+                    # Draw text label in black
+                    overlay_draw.text(
+                        (label_x, label_y),
+                        f"[{ref}]",
+                        fill=(0, 0, 0, 220),
+                        font=font,
+                    )
+                    # Highlight rectangle around element
+                    if a.get("w") and a.get("h"):
+                        overlay_draw.rectangle(
+                            [left, top, left + a["w"], top + a["h"]],
+                            outline=(255, 200, 0, 220),
+                            width=2,
+                        )
+
+                img = Image.alpha_composite(img, overlay)
+
+                # Convert back to RGB for PNG encoding
+                img_rgb = img.convert("RGB")
+
+                buf = io.BytesIO()
+                img_rgb.save(buf, format="PNG")
+                annotated_b64 = base64.b64encode(buf.getvalue()).decode()
+
+                # Build minimal element listing for context
+                lines = ["Interactive elements:"]
+                for a in annotations:
+                    lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
+
+                return [
+                    ImageContent(type="image", data=annotated_b64, mimeType="image/png"),
+                    TextContent(type="text", text="\n".join(lines)),
+                ]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Annotation overlay error: {e}")]
 
         elif name == "browser_key":
             key = arguments.get("key", "Escape")
