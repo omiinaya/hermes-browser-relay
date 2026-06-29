@@ -424,6 +424,32 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="browser_refresh",
+            description="Reload the current page. Optionally bypass cache with hardReload=true.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hard_reload": {"type": "boolean", "description": "Bypass cache (default: false)", "default": False},
+                },
+            },
+        ),
+        Tool(
+            name="browser_forward",
+            description="Navigate forward in browser history.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_get_title",
+            description="Get the current page title.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
             name="browser_block_patterns",
             description="Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API (MV3). Pass patterns=[\"*.css\",\"*.jpg\",\"*analytics*\"] to block, or patterns=[] to clear all blocks. Supports glob-style: *.css, *analytics*, https://example.com/*",
             inputSchema={
@@ -1058,6 +1084,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 if state: lines.append(f"     State: {state}")
                 if total: lines.append(f"     Size: {total} bytes")
             return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "browser_refresh":
+            hard = arguments.get("hard_reload", False)
+            result = _cdp("Page.reload", {"ignoreCache": hard})
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            return [TextContent(type="text", text="🔄 Page reloaded" + (" (hard)" if hard else ""))]
+
+        elif name == "browser_forward":
+            _cdp("Runtime.evaluate", {"expression": "window.history.forward()"})
+            return [TextContent(type="text", text="Navigated forward")]
+
+        elif name == "browser_get_title":
+            title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
+            return [TextContent(type="text", text=f"📄 {title}")]
 
         elif name == "browser_block_patterns":
             patterns = arguments.get("patterns", [])
