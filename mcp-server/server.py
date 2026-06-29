@@ -272,7 +272,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="browser_screenshot_annotated",
-            description="Take a screenshot with numbered labels overlaid on interactive elements. Each [N] corresponds to a clickable element. Use this when you need to see what elements are on screen and where.",
+            description="Take a screenshot with numbered labels overlaid on interactive elements. Each [N] corresponds to a clickable element.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_key",
+            description="Press a keyboard key (e.g. 'Escape', 'Tab', 'ArrowDown', 'Delete', 'Backspace'). Useful for keyboard navigation and form interactions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key to press (e.g. 'Escape', 'Tab', 'ArrowDown', 'Enter', 'Delete', 'Backspace')", "default": "Escape"},
+                },
+            },
+        ),
+        Tool(
+            name="browser_back",
+            description="Navigate back to the previous page in browser history.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -323,13 +341,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_type":
             selector = arguments["selector"]
             text = arguments["text"]
-            # One JS eval: focus the element, set its value, dispatch input/change events
+            # Use execCommand('insertText') for full React/Next.js compatibility
             type_expr = f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
                 el.focus();
-                el.value = {json.dumps(text)};
+                el.value = '';
+                el.select();
+                document.execCommand('insertText', false, {json.dumps(text)});
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
@@ -608,6 +628,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 ImageContent(type="image", data=data, mimeType="image/png"),
                 TextContent(type="text", text="\n".join(lines)),
             ]
+
+        elif name == "browser_key":
+            key = arguments.get("key", "Escape")
+            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
+            return [TextContent(type="text", text=f"Pressed {key}")]
+
+        elif name == "browser_back":
+            result = _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+            return [TextContent(type="text", text="Navigated back")]
 
         elif name == "browser_recent_events":
             limit = min(arguments.get("limit", 20), 200)

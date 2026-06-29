@@ -230,6 +230,32 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "browser_key",
+        "description": "Press a keyboard key (e.g. 'Escape', 'Tab', 'ArrowDown', 'Delete', 'Backspace').",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Key to press", "default": "Escape"},
+            },
+        },
+    },
+    {
+        "name": "browser_back",
+        "description": "Navigate back to the previous page in browser history.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "browser_screenshot_annotated",
+        "description": "Take a screenshot with numbered labels overlaid on interactive elements.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
     ]
 
 
@@ -306,13 +332,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_type":
             selector = args["selector"]
             text = args["text"]
-            # One JS eval: focus the element, set its value, dispatch input/change events
+            # Use execCommand('insertText') for full React/Next.js compatibility
             type_expr = f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
                 el.focus();
-                el.value = {json.dumps(text)};
+                el.value = '';
+                el.select();
+                document.execCommand('insertText', false, {json.dumps(text)});
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
@@ -528,6 +556,54 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return "\n".join(lines)
             except Exception as e:
                 return json.dumps({"error": str(e)})
+
+        elif name == "browser_key":
+            key = args.get("key", "Escape")
+            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
+            return f"Pressed {key}"
+
+        elif name == "browser_back":
+            _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+            return "Navigated back"
+
+        elif name == "browser_screenshot_annotated":
+            annotate_js = f"""
+            (() => {{
+                const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
+                const all = document.querySelectorAll(selectors.join(','));
+                const seen = new Set();
+                const items = [];
+                let idx = 0;
+                all.forEach(el => {{
+                    if (seen.has(el)) return;
+                    seen.add(el);
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return;
+                    if (r.top > window.innerHeight || r.bottom < 0) return;
+                    idx++;
+                    const txt = (el.textContent||'').trim().substring(0, 40);
+                    const label = txt || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || el.tagName;
+                    items.push({{ ref: idx, text: label.substring(0, 30), x: Math.round(r.x + r.width/2), y: Math.round(r.top + 8) }});
+                }});
+                return items.slice(0, 50);
+            }})()
+            """
+            annotations = _parse_result(_cdp("Runtime.evaluate", {"expression": annotate_js, "returnByValue": True}))
+            shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+            data = shot.get("result", {}).get("data", "")
+            lines = ["📸 Annotated screenshot — interactive elements:", ""]
+            for a in (annotations if isinstance(annotations, list) else []):
+                lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
+            if data:
+                import tempfile, os, base64
+                img_dir = os.path.expanduser("~/.hermes/image_cache")
+                os.makedirs(img_dir, exist_ok=True)
+                img_path = os.path.join(img_dir, f"annotated_{int(__import__('time').time())}.png")
+                with open(img_path, "wb") as f:
+                    f.write(base64.b64decode(data))
+                return "MEDIA:" + img_path + "\n" + "\n".join(lines)
+            return "\n".join(lines)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
