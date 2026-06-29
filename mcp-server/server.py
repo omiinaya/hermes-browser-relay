@@ -53,9 +53,13 @@ _cdp_opener.addheaders = [("Content-Type", "application/json")]
 _capture_opener = urllib.request.build_opener()
 
 
-def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
-    """Send a CDP command to the relay server. Uses shared connection for keep-alive."""
-    body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
+def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, tab_id: int | None = None) -> dict:
+    """Send a CDP command to the relay server. Uses shared connection for keep-alive.
+    If tab_id is provided, routes to that specific tab attachment."""
+    body_dict = {"method": method, "params": params or {}, "timeout": timeout}
+    if tab_id is not None:
+        body_dict["tabId"] = tab_id
+    body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:
         with _cdp_opener.open(req, timeout=timeout + 5) as resp:
@@ -381,6 +385,36 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="browser_list_tabs",
             description="List all open browser tabs with their IDs, titles, URLs, and active status. Use this before browser_switch_tab to find the tab you want.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_attach_tab",
+            description="Attach the CDP debugger to a specific tab by tabId (additive — keeps existing attachments). Use browser_list_tabs to see available tabs.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "Tab ID to attach to"},
+                    "keyword": {"type": "string", "description": "URL or title keyword to search for (alternative to tab_id)"},
+                },
+            },
+        ),
+        Tool(
+            name="browser_detach_tab",
+            description="Detach the CDP debugger from a specific tab by tabId. Use browser_list_attachments to see currently attached tabs.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "Tab ID to detach from"},
+                },
+                "required": ["tab_id"],
+            },
+        ),
+        Tool(
+            name="browser_list_attachments",
+            description="List currently attached tab IDs — shows which tabs have active CDP debugger connections.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -984,6 +1018,68 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 return [TextContent(type="text", text="\n".join(lines))]
             except Exception as e:
                 return [TextContent(type="text", text=f"Error listing tabs: {e}")]
+
+        elif name == "browser_attach_tab":
+            tab_id = arguments.get("tab_id")
+            keyword = arguments.get("keyword")
+            if not tab_id and not keyword:
+                return [TextContent(type="text", text="Provide either tab_id or keyword to find the tab.")]
+            if keyword and not tab_id:
+                try:
+                    req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        result = json.loads(resp.read().decode())
+                    kw = keyword.lower()
+                    matches = [t for t in result.get("tabs", [])
+                               if kw in (t.get("title", "") or "").lower()
+                               or kw in (t.get("url", "") or "").lower()]
+                    if not matches:
+                        return [TextContent(type="text", text=f"No tab found matching '{keyword}'")]
+                    tab_id = matches[0]["id"]
+                except Exception as e:
+                    return [TextContent(type="text", text=f"Error: {e}")]
+            body = json.dumps({"tabId": tab_id}).encode()
+            req = urllib.request.Request(f"{CDP_SERVER}/tabs/attach", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    return [TextContent(type="text", text=f"🔗 Attached to tab {tab_id} ({result.get('attachmentCount', '?')} total attachments)")]
+                return [TextContent(type="text", text=f"Attach failed: {result.get('error', 'unknown')}")]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
+
+        elif name == "browser_detach_tab":
+            tab_id = arguments.get("tab_id")
+            if not tab_id:
+                return [TextContent(type="text", text="Provide tab_id to detach.")]
+            body = json.dumps({"tabId": tab_id}).encode()
+            req = urllib.request.Request(f"{CDP_SERVER}/tabs/detach", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    return [TextContent(type="text", text=f"🔌 Detached from tab {tab_id} ({result.get('attachmentCount', '?')} remaining)")]
+                return [TextContent(type="text", text=f"Detach failed: {result.get('error', 'unknown')}")]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
+
+        elif name == "browser_list_attachments":
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/tabs/attachments")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    result = json.loads(resp.read().decode())
+                attached = result.get("attachments", [])
+                if not attached:
+                    return [TextContent(type="text", text="No tabs currently attached.")]
+                lines = [f"🔗 {len(attached)} attached tab(s):", ""]
+                for a in attached:
+                    lines.append(f"  [{a['tabId']}]")
+                return [TextContent(type="text", text="\n".join(lines))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
 
         elif name == "browser_switch_tab":
             tab_id = arguments.get("tab_id")

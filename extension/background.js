@@ -7,14 +7,11 @@ const DEFAULT_SERVER = 'ws://127.0.0.1:9223/ws';
 let SERVER_URL = DEFAULT_SERVER;
 let ws = null;
 let wsReconnectTimer = null;
-let attachedTabId = null;
-let attached = false;
+let attachments = new Map();  // tabId -> true (multi-tab support)
 let reconnectDelay = 1000; // Starts at 1s, backs off to max 60s
 
 // Connection status: 'disconnected', 'connecting', 'connected'
 let connectionStatus = 'disconnected';
-// Tab status: 'detached', 'attaching', 'attached'
-let tabStatus = 'detached';
 // Track last time we heard from the server
 let lastServerMessageTime = null;
 
@@ -95,45 +92,41 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 
   if (method === 'Network.loadingFinished') {
     const target = bodyTargets.get(params.requestId);
-    if (target && attachedTabId) {
+    if (target && attachments.size > 0) {
       bodyTargets.delete(params.requestId);
-      chrome.debugger.sendCommand(
-        { tabId: attachedTabId },
-        'Network.getResponseBody',
-        { requestId: params.requestId },
-        (result) => {
-          const lastError = chrome.runtime.lastError;
-          if (lastError) {
-            console.warn('[CDP] getResponseBody failed:', lastError.message, 'url:', target.url);
-            return;
+      for (const [tid] of attachments) {
+        chrome.debugger.sendCommand(
+          { tabId: tid },
+          'Network.getResponseBody',
+          { requestId: params.requestId },
+          (result) => {
+            const lastError = chrome.runtime.lastError;
+            if (lastError) return;
+            if (result && result.body !== undefined && ws && ws.readyState === WebSocket.OPEN) {
+              safeSend({
+                type: 'response_body',
+                requestId: params.requestId,
+                tabId: tid,
+                url: target.url,
+                mimeType: target.mime,
+                body: result.body,
+                base64Encoded: result.base64Encoded || false,
+              });
+            }
           }
-          if (result && result.body !== undefined && ws && ws.readyState === WebSocket.OPEN) {
-            safeSend({
-              type: 'response_body',
-              requestId: params.requestId,
-              url: target.url,
-              mimeType: target.mime,
-              body: result.body,
-              base64Encoded: result.base64Encoded || false,
-            });
-          }
-        }
-      );
+        );
+      }
     }
   }
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
   console.debug('[CDP] Detached from tab', source.tabId, '- reason:', reason);
-  attachedTabId = null;
-  attached = false;
-  tabStatus = 'detached';
-  bodyTargets.clear();
+  attachments.delete(source.tabId);
   updateBadge();
 
-  // Start persistent reattach watcher — keeps trying every 5s
-  // until we successfully attach to a tab or the WS disconnects
-  if (connectionStatus === 'connected') {
+  // If no more attachments and WS connected, start reattach watcher
+  if (attachments.size === 0 && connectionStatus === 'connected') {
     startReattachWatcher();
   }
 });
@@ -294,11 +287,11 @@ function connectWS() {
     reconnectDelay = 1000; // Reset backoff on successful connect
     updateBadge();
 
-    // Send hello with tab info if attached
-    if (attachedTabId) {
+    // Send hello for all currently attached tabs
+    for (const [tid] of attachments) {
       safeSend({
         type: 'hello',
-        tabId: attachedTabId,
+        tabId: tid,
         info: { attached: true },
       });
     }
@@ -306,8 +299,8 @@ function connectWS() {
     // Start client-side heartbeat as fallback
     startClientHeartbeat();
 
-    // If WS reconnected but we're not attached, start reattach watcher
-    if (!attached) {
+    // If WS reconnected but no attachments, start reattach watcher
+    if (attachments.size === 0) {
       startReattachWatcher();
     }
   };
@@ -393,7 +386,7 @@ function stopClientHeartbeat() {
 
 function handleTabCommand(msg) {
   const id = msg.id;
-  const command = msg.tabCommand; // 'list' or 'switch'
+  const command = msg.tabCommand; // 'list', 'switch', 'attach', 'detach', 'list-attachments'
   const tabId = msg.tabId;
 
   if (command === 'list') {
@@ -423,6 +416,34 @@ function handleTabCommand(msg) {
     return true;
   }
 
+  if (command === 'attach') {
+    if (tabId == null) {
+      safeSend({ id, type: 'tab-attach', success: false, error: 'No tabId' });
+      return true;
+    }
+    attachToTab(tabId).then((result) => {
+      safeSend({ id, type: 'tab-attach', ...result, attachmentCount: attachments.size });
+    });
+    return true;
+  }
+
+  if (command === 'detach') {
+    if (tabId == null) {
+      safeSend({ id, type: 'tab-detach', success: false, error: 'No tabId' });
+      return true;
+    }
+    detach(tabId).then((result) => {
+      safeSend({ id, type: 'tab-detach', ...result, attachmentCount: attachments.size });
+    });
+    return true;
+  }
+
+  if (command === 'list-attachments') {
+    const attached = Array.from(attachments.keys()).map(tid => ({ tabId: tid }));
+    safeSend({ id, type: 'tab-attachment-list', attachments: attached });
+    return true;
+  }
+
   return false;
 }
 
@@ -432,7 +453,7 @@ function startReattachWatcher() {
   stopReattachWatcher();
   console.debug('[CDP] Starting reattach watcher (every 5s)');
   reattachWatcherTimer = setInterval(() => {
-    if (attached || connectionStatus !== 'connected') {
+    if (attachments.size > 0 || connectionStatus !== 'connected') {
       stopReattachWatcher();
       return;
     }
@@ -491,19 +512,27 @@ function handleServerMessage(msg) {
   const id = msg.id;
   const method = msg.method;
   const params = msg.params || {};
+  const targetTabId = msg.tabId;  // Optional: target specific tab
 
-  if (!attachedTabId || !attached) {
+  if (attachments.size === 0) {
     if (id) {
       safeSend({
         id: id,
-        error: { code: -32000, message: 'No tab attached' },
+        error: { code: -32000, message: 'No tabs attached' },
       });
     }
     return;
   }
 
+  // Determine which tab to route the command to
+  let targetId = targetTabId;
+  if (!targetId || !attachments.has(targetId)) {
+    // If no specific tabId or it's not attached, use the first attachment
+    targetId = attachments.keys().next().value;
+  }
+
   chrome.debugger.sendCommand(
-    { tabId: attachedTabId },
+    { tabId: targetId },
     method,
     params,
     (result) => {
@@ -528,40 +557,23 @@ function handleServerMessage(msg) {
   );
 }
 
-// ====== Attach / Detach ======
+// ====== Attach / Detach (Multi-Tab) ======
 
 async function attachToTab(tabId) {
-  if (attached && attachedTabId === tabId) {
-    return { success: true, tabId };
+  // Already attached to this tab — nothing to do
+  if (attachments.has(tabId)) {
+    return { success: true, tabId, alreadyAttached: true, attachmentCount: attachments.size };
   }
-
-  // Detach from current first
-  if (attachedTabId) {
-    try {
-      await new Promise((resolve) => {
-        chrome.debugger.detach({ tabId: attachedTabId }, () => resolve());
-      });
-    } catch (e) {
-      // Ignore detach errors
-    }
-  }
-
-  tabStatus = 'attaching';
-  updateBadge();
 
   return new Promise((resolve) => {
     chrome.debugger.attach({ tabId: tabId }, '1.3', () => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
-        tabStatus = 'detached';
-        updateBadge();
         resolve({ success: false, error: lastError.message });
         return;
       }
 
-      attachedTabId = tabId;
-      attached = true;
-      tabStatus = 'attached';
+      attachments.set(tabId, true);
       updateBadge();
 
       // Enable Network + Page domains (fire-and-forget)
@@ -585,30 +597,42 @@ async function attachToTab(tabId) {
         });
       }
 
-      // Stop reattach watcher — we're attached
+      // Stop reattach watcher — at least one attachment exists
       stopReattachWatcher();
 
-      resolve({ success: true, tabId });
+      resolve({ success: true, tabId, attachmentCount: attachments.size });
     });
   });
 }
 
-async function detach() {
-  if (!attachedTabId) {
-    tabStatus = 'detached';
-    return { success: true };
+async function detach(tabId) {
+  if (!attachments.has(tabId)) {
+    return { success: true, alreadyDetached: true, attachmentCount: attachments.size };
   }
 
   return new Promise((resolve) => {
-    chrome.debugger.detach({ tabId: attachedTabId }, () => {
-      attachedTabId = null;
-      attached = false;
-      tabStatus = 'detached';
+    chrome.debugger.detach({ tabId: tabId }, () => {
+      attachments.delete(tabId);
       updateBadge();
-      stopReattachWatcher();
-      resolve({ success: true });
+      resolve({ success: true, tabId, attachmentCount: attachments.size });
     });
   });
+}
+
+async function detachAll() {
+  const ids = Array.from(attachments.keys());
+  for (const tid of ids) {
+    try {
+      await new Promise((resolve) => {
+        chrome.debugger.detach({ tabId: tid }, () => resolve());
+      });
+    } catch (e) {
+      // Ignore individual detach errors
+    }
+    attachments.delete(tid);
+  }
+  updateBadge();
+  return { success: true, detachedCount: ids.length };
 }
 
 // ====== Badge ======
@@ -616,9 +640,9 @@ async function detach() {
 function updateBadge() {
   let color, text;
 
-  if (connectionStatus === 'connected' && tabStatus === 'attached') {
+  if (connectionStatus === 'connected' && attachments.size > 0) {
     color = '#4CAF50';
-    text = 'CDP';
+    text = String(attachments.size);
   } else if (connectionStatus === 'connected') {
     color = '#2196F3';
     text = 'WS';
@@ -634,13 +658,10 @@ function updateBadge() {
   chrome.action.setBadgeText({ text });
 }
 
-// ====== Tab Switch Auto-Reattach ======
+// ====== Tab Switch Auto-Attach ======
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
   const newTabId = activeInfo.tabId;
-
-  // Skip if same tab or no connection
-  if (newTabId === attachedTabId) return;
   if (connectionStatus !== 'connected') return;
 
   // Ignore chrome:// URLs
@@ -651,7 +672,8 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
       return;
     }
 
-    console.debug('[CDP] Tab switched to', newTabId, '-', tab.url);
+    console.debug('[CDP] Tab activated:', newTabId, '-', tab.url);
+    // Auto-attach to newly activated tab (additive — won't detach existing)
     attachToTab(newTabId);
   });
 });
@@ -661,14 +683,18 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
     case 'connect':
-      reconnectDelay = 1000; // Reset backoff on manual connect
+      reconnectDelay = 1000;
       connectWS();
-      setTimeout(() => sendResponse({ connectionStatus, tabStatus, attachedTabId }), 500);
+      setTimeout(() => sendResponse({
+        connectionStatus,
+        attachmentCount: attachments.size,
+        attachedTabIds: Array.from(attachments.keys()),
+      }), 500);
       return true;
 
     case 'disconnect':
       disconnectWS();
-      sendResponse({ connectionStatus, tabStatus });
+      sendResponse({ connectionStatus, attachmentCount: 0 });
       break;
 
     case 'attach':
@@ -680,11 +706,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'detach':
-      detach().then(sendResponse);
+      if (msg.tabId) {
+        detach(msg.tabId).then(sendResponse);
+      } else {
+        detachAll().then(sendResponse);
+      }
       return true;
 
     case 'get_status':
-      sendResponse({ connectionStatus, tabStatus, attachedTabId, serverUrl: SERVER_URL, lastServerMessageTime });
+      sendResponse({
+        connectionStatus,
+        attachmentCount: attachments.size,
+        attachedTabIds: Array.from(attachments.keys()),
+        serverUrl: SERVER_URL,
+        lastServerMessageTime,
+      });
       break;
 
     case 'get_server_url':
