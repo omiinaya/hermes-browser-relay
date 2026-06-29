@@ -275,7 +275,7 @@ function connectWS() {
   };
 
   ws.onerror = (err) => {
-    console.error('[CDP] WebSocket error');
+    console.warn('[CDP] WebSocket connection failed — will retry');
     // onclose will fire after this, triggering reconnect
   };
 }

@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""
+Browser Relay MCP Server — Exposes Chrome/CDP browser control as MCP tools.
+
+Bridges Hermes Agent to a running CDP relay (:9223) so browser actions
+(navigate, eval, click, type, screenshot) are available as first-class tools.
+
+Protocol: stdio MCP — read JSON-RPC from stdin, write to stdout.
+"""
+import json
+import os
+import time
+import urllib.request
+import urllib.error
+from typing import Any
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent, ImageContent
+
+# ---------------------------------------------------------------------------
+# CDP Relay Client
+# ---------------------------------------------------------------------------
+
+CDP_SERVER = os.environ.get("CDP_RELAY_URL", "http://127.0.0.1:9223")
+CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
+
+
+def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
+    """Send a CDP command to the relay server. Returns the full response dict."""
+    body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
+    req = urllib.request.Request(
+        f"{CDP_SERVER}/cdp",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout + 5) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode() if e.fp else "{}"
+        return {"error": f"HTTP {e.code}", "detail": json.loads(detail) if detail else {}}
+    except urllib.error.URLError as e:
+        return {"error": f"Connection failed: {e.reason}", "hint": "Is the CDP relay running on :9223?"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _parse_result(result: dict) -> Any:
+    """Extract the actual return value from a CDP response."""
+    if "error" in result:
+        return result
+    if "result" in result and "result" in result["result"]:
+        val = result["result"]["result"].get("value")
+        if val is not None:
+            return val
+        exc = result["result"].get("exceptionDetails")
+        if exc:
+            return {"error": f"JS exception: {exc.get('text', str(exc))}"}
+        return result["result"]["result"]
+    return result.get("result", result)
+
+
+# ---------------------------------------------------------------------------
+# MCP Server
+# ---------------------------------------------------------------------------
+
+app = Server("browser-relay")
+
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="browser_navigate",
+            description="Navigate the browser to a URL. Returns after navigation starts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to navigate to (e.g. https://example.com)"},
+                },
+                "required": ["url"],
+            },
+        ),
+        Tool(
+            name="browser_eval",
+            description="Evaluate JavaScript in the current page context. Returns the result as a string. Prefer this over screenshots for reading page state — it's 10x faster.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "JavaScript expression to evaluate"},
+                },
+                "required": ["expression"],
+            },
+        ),
+        Tool(
+            name="browser_click",
+            description="Click an element by CSS selector. Finds coordinates via JS, dispatches CDP mouse events.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector (e.g. '#submit-btn', 'button.primary')"},
+                },
+                "required": ["selector"],
+            },
+        ),
+        Tool(
+            name="browser_type",
+            description="Type text into an input field. Selects the field first, clears it (Ctrl+A, Delete), then inserts text.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the input field"},
+                    "text": {"type": "string", "description": "Text to type"},
+                },
+                "required": ["selector", "text"],
+            },
+        ),
+        Tool(
+            name="browser_enter",
+            description="Press the Enter key. Use after typing into a search box or form.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_screenshot",
+            description="Capture a screenshot of the current page as PNG. Returns base64-encoded image data.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_status",
+            description="Check the CDP relay connection status — is an extension connected and attached to a tab?",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_send_cdp",
+            description="Send an arbitrary CDP command. Use for advanced operations not covered by other tools.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "description": "CDP method name (e.g. 'Page.navigate', 'Runtime.evaluate')"},
+                    "params": {"type": "object", "description": "CDP parameters as JSON object"},
+                },
+                "required": ["method"],
+            },
+        ),
+    ]
+
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageContent]:
+    try:
+        if name == "browser_navigate":
+            url = arguments["url"]
+            result = _cdp("Page.navigate", {"url": url})
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            return [TextContent(type="text", text=json.dumps(result.get("result", {}), indent=2))]
+
+        elif name == "browser_eval":
+            expr = arguments["expression"]
+            result = _cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True})
+            value = _parse_result(result)
+            return [TextContent(type="text", text=str(value))]
+
+        elif name == "browser_click":
+            selector = arguments["selector"]
+            # Find element coordinates via JS
+            find_expr = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const r = el.getBoundingClientRect();
+                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+            }})()
+            """
+            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
+            coords = _parse_result(find_result)
+            if isinstance(coords, dict) and "error" in coords:
+                return [TextContent(type="text", text=f"Error: {coords['error']}")]
+            if isinstance(coords, dict) and "x" in coords:
+                x, y = round(coords["x"]), round(coords["y"])
+                _cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+                _cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+                desc = f"Clicked '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
+                return [TextContent(type="text", text=desc)]
+            return [TextContent(type="text", text=f"Unexpected: {json.dumps(coords, indent=2)}")]
+
+        elif name == "browser_type":
+            selector = arguments["selector"]
+            text = arguments["text"]
+            # Click the field first
+            click_result = await call_tool("browser_click", {"selector": selector})
+            time.sleep(0.2)
+            # Select all + delete (Ctrl+A, Delete)
+            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "a"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Delete"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Delete"})
+            time.sleep(0.1)
+            # Type
+            _cdp("Input.insertText", {"text": text})
+            return [TextContent(type="text", text=f"Typed '{text}' into {selector}")]
+
+        elif name == "browser_enter":
+            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": "Enter", "windowsVirtualKeyCode": 13})
+            _cdp("Input.dispatchKeyEvent", {"type": "char", "text": "\r"})
+            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13})
+            return [TextContent(type="text", text="Pressed Enter")]
+
+        elif name == "browser_screenshot":
+            result = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            data = result.get("result", {}).get("data", "")
+            if data:
+                return [ImageContent(type="image", data=data, mimeType="image/png")]
+            return [TextContent(type="text", text="No screenshot data returned")]
+
+        elif name == "browser_status":
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/status")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    status = json.loads(resp.read().decode())
+                return [TextContent(type="text", text=json.dumps(status, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"CDP relay unreachable: {e}")]
+
+        elif name == "browser_send_cdp":
+            method = arguments["method"]
+            params = arguments.get("params", {})
+            result = _cdp(method, params)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        else:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error in {name}: {e}")]
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def main():
+    async def run():
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(read_stream, write_stream, app.create_initialization_options())
+    import asyncio
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()
