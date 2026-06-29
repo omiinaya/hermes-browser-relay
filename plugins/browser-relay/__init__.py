@@ -279,6 +279,16 @@ TOOL_SCHEMAS = [
             "properties": {},
         },
     },
+    {
+        "name": "browser_console",
+        "description": "Read recent browser console output (console.log/warn/error/debug/info messages). Returns the most recent console messages captured from the page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max messages to return (default: 20, max: 200)", "default": 20},
+            },
+        },
+    },
     ]
 
 
@@ -609,6 +619,50 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_back":
             _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
             return "Navigated back"
+
+        elif name == "browser_console":
+            limit = min(args.get("limit", 20), 200)
+            # Ensure Runtime domain is enabled (safe to send repeatedly)
+            _cdp("Runtime.enable", timeout=5)
+            # Query capture buffer for console events
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    result = json.loads(r.read().decode())
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+            events = result.get("events", [])
+            # Filter for Runtime.consoleAPICalled events
+            console_events = [e for e in events if e.get("type") == "event" and e.get("method") == "Runtime.consoleAPICalled"]
+            console_events = console_events[:limit]
+            if not console_events:
+                return "No console messages captured yet. Try navigating to a page and running JavaScript that calls console.log()."
+            lines = [f"📋 {len(console_events)} recent console messages:", ""]
+            for e in console_events:
+                params = e.get("params", {})
+                level = params.get("type", "log")
+                args_list = params.get("args", [])
+                text_parts = []
+                for arg in args_list:
+                    arg_type = arg.get("type", "")
+                    if arg_type == "string":
+                        text_parts.append(arg.get("value", ""))
+                    elif arg_type in ("number", "boolean"):
+                        text_parts.append(str(arg.get("value", "")))
+                    elif arg_type == "undefined":
+                        text_parts.append("undefined")
+                    elif arg_type == "object":
+                        preview = arg.get("preview", {})
+                        if preview and preview.get("description"):
+                            text_parts.append(str(preview.get("description", "")))
+                        else:
+                            text_parts.append(str(arg.get("description", "[Object]")))
+                    else:
+                        text_parts.append(str(arg.get("description", arg.get("value", str(arg)))))
+                msg_text = " ".join(text_parts)
+                icon = {"log": "📝", "warning": "⚠️", "error": "❌", "debug": "🔍", "info": "ℹ️"}.get(level, "📝")
+                lines.append(f"  {icon} [{level}] {msg_text[:300]}")
+            return "\n".join(lines)
 
         elif name == "browser_select_option":
             selector = args["selector"]
