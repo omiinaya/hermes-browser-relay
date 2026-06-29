@@ -98,6 +98,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         'Network.getResponseBody',
         { requestId: params.requestId },
         (result) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            console.warn('[CDP] getResponseBody failed:', lastError.message, 'url:', target.url);
+            return;
+          }
           if (result && result.body !== undefined && ws && ws.readyState === WebSocket.OPEN) {
             safeSend({
               type: 'response_body',
