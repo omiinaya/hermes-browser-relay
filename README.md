@@ -2,7 +2,7 @@
 
 A Chrome DevTools Protocol relay server that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 1.4.0** — 33 tools across MCP server + Hermes plugin. Multi-tab attach support, URL blocking via declarativeNetRequest, MCP watchdog, tab manager, cookie management, downloads query, find, refresh/forward/get_title, and more.
+**Version 1.5.0** — 39 tools across MCP server + Hermes plugin. Popup tab selector, multi-tab attach support, PDF save, network request viewer, response body capture, cookie management, URL blocking via declarativeNetRequest, MCP watchdog, tab manager, find, set_cookie, and more.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ A Chrome DevTools Protocol relay server that bridges remote browser control betw
 ```
 
 **CDP Relay** (`server.py`, port `:9223`) — sends CDP commands to Chrome tabs (single or multi-tab), responds via HTTP, and captures browser events.
-- **`GET /recent?limit=20&mode=nav`** — recent captured events (navigations, downloads, requests)
+- **`GET /recent?limit=20&mode=nav`** — recent captured events (navigations, downloads, requests); supports `?type=webrequest`, `?type=response_body`, `?since=<epoch_ms>` filters
 - **`GET /tabs`** — list all open browser tabs
 - **`POST /tabs/switch`** — switch active attachment to a tab
 - **`POST /tabs/attach`** — add a tab attachment (multi-tab)
@@ -31,17 +31,16 @@ A Chrome DevTools Protocol relay server that bridges remote browser control betw
 - **`GET /events`** — SSE streaming for real-time event monitoring
 - **`GET /status` / `GET /stats`** — server status
 
-## What's New in v1.4.0
+## What's New in v1.5.0
 
-- ✅ **Multi-tab attach support** — attach debugger to multiple tabs simultaneously
-- ✅ **Tab management** — `browser_list_tabs`, `browser_switch_tab`, `browser_attach_tab`, `browser_detach_tab`, `browser_list_attachments`
-- ✅ **URL blocking** — `browser_block_patterns` via declarativeNetRequest (`*.css`, `*analytics*`, `/path/*`)
-- ✅ **Cookie tools** — `browser_get_cookies`, `browser_clear_cookies` (name, value, domain, expiry, httpOnly, secure)
-- ✅ **Downloads** — `browser_get_downloads` — query capture buffer for download events
-- ✅ **Page tools** — `browser_refresh`, `browser_forward`, `browser_get_title`, `browser_find`
-- ✅ **MCP watchdog** — background daemon thread, 15s health check, auto-reconnect detection
-- ✅ **Tab-targeted CDP** — all tools accept optional `tab_id` parameter for multi-tab routing
-- ✅ **`tab_id` on all tools** — every browser tool can target a specific tab attachment
+- ✅ **Popup tab selector** — attach/detach per-tab buttons, auto-attach toggle, connection status, server URL config
+- ✅ **Network query tools** — `browser_network_requests`, `browser_response_body` — query captured webRequest events and response bodies from relay buffer
+- ✅ **Navigation wait** — `browser_wait_for_navigation` — poll event buffer until page finishes loading (returns URL/title)
+- ✅ **Cookie set** — `browser_set_cookie` — inject cookies via CDP (name, value, domain, path, secure, httpOnly, sameSite)
+- ✅ **PDF save** — `browser_pdf` — save current page as PDF via CDP `Page.printToPDF`
+- ✅ **Text find** — `browser_find` — search page text for pattern, returns element tag + snippet
+- ✅ **`tab_id` auto-injection** — every tool has the `tab_id` parameter for multi-tab targeting via programmatic schema injection
+- ✅ **Relay `/recent` filters** — `?type=`, `?since=` for targeted event queries
 
 ## Quick Start
 

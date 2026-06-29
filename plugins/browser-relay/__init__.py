@@ -10,6 +10,7 @@ Usage:
 """
 
 import json
+import base64
 import urllib.request
 import urllib.error
 from typing import Any
@@ -439,6 +440,59 @@ TOOL_SCHEMAS = [
                 "landscape": {"type": "boolean", "description": "Landscape orientation (default: false)", "default": False},
                 "scale": {"type": "number", "description": "Scale factor from 0.1 to 2.0 (default: 1.0)", "default": 1.0},
             },
+        },
+    },
+    {
+        "name": "browser_wait_for_navigation",
+        "description": "Wait for a page navigation (tab.navigated event) to complete. Polls the relay's event buffer until a fresh navigation is detected or timeout. Returns the URL, title, and tabId of the new page. Use this after browser_click or browser_navigate when you need the page to finish loading before inspecting it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to wait for navigation on (optional — defaults to active tab)"},
+                "timeout": {"type": "integer", "description": "Max seconds to wait (default: 30)", "default": 30},
+            },
+        },
+    },
+    {
+        "name": "browser_network_requests",
+        "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting response headers, or debugging network issues.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event": {"type": "string", "description": "Filter by event type: 'completed', 'error', 'beforeRequest', 'beforeSendHeaders', 'headersReceived' (optional — returns all types)"},
+                "since": {"type": "number", "description": "Only include events after this timestamp (epoch ms). Use the _received field from a prior call for polling", "default": 0},
+                "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 100)", "default": 20},
+            },
+        },
+    },
+    {
+        "name": "browser_response_body",
+        "description": "Query captured response bodies from the relay's event buffer. The extension captures response bodies for JSON/PDF responses and matched URL patterns. Returns the URL, mime type, and body content for each captured response.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "since": {"type": "number", "description": "Only include bodies captured after this timestamp (epoch ms)", "default": 0},
+                "limit": {"type": "integer", "description": "Max bodies to return (default: 5, max: 20)", "default": 5},
+                "include_body": {"type": "boolean", "description": "Whether to include full body content (default: false — only metadata)", "default": False},
+            },
+        },
+    },
+    {
+        "name": "browser_set_cookie",
+        "description": "Set a browser cookie via CDP Network.setCookie. Useful for auth workflows, session injection, or bypassing login screens. Returns success/failure and cookie details.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Cookie name"},
+                "value": {"type": "string", "description": "Cookie value"},
+                "url": {"type": "string", "description": "Cookie URL (e.g. https://example.com). If omitted, uses domain + path"},
+                "domain": {"type": "string", "description": "Cookie domain (e.g. .example.com)"},
+                "path": {"type": "string", "description": "Cookie path (default: /)"},
+                "secure": {"type": "boolean", "description": "Secure flag (default: false)", "default": False},
+                "httpOnly": {"type": "boolean", "description": "HttpOnly flag (default: false)", "default": False},
+                "sameSite": {"type": "string", "description": "SameSite: 'Strict', 'Lax', or 'None' (optional)"},
+            },
+            "required": ["name", "value"],
         },
     },
 ]
@@ -1171,6 +1225,121 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     "mime": "application/pdf",
                 }, indent=2)
             return "No PDF data returned"
+
+        elif name == "browser_wait_for_navigation":
+            import time as _time_module
+            tab_id = args.get("tab_id")
+            timeout = min(args.get("timeout", 30), 120)
+            deadline = _time_module.time() + timeout
+            start_ts = _time_module.time() * 1000
+            while _time_module.time() < deadline:
+                try:
+                    req = urllib.request.Request(f"{CDP_SERVER}/recent?mode=nav&since={start_ts}&limit=5")
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        result = json.loads(r.read().decode())
+                    events = result.get("events", [])
+                    for e in events:
+                        if e.get("type") == "tab" and e.get("event") == "navigated":
+                            if tab_id is None or e.get("tabId") == tab_id:
+                                return json.dumps({
+                                    "navigated": True,
+                                    "url": e.get("url", ""),
+                                    "title": e.get("title", ""),
+                                    "tabId": e.get("tabId"),
+                                    "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
+                                }, indent=2)
+                except Exception:
+                    pass
+                _time_module.sleep(0.5)
+            return json.dumps({
+                "navigated": False,
+                "error": f"Navigation timeout after {timeout}s",
+                "elapsed": timeout,
+            }, indent=2)
+
+        elif name == "browser_network_requests":
+            ev_filter = args.get("event", "")
+            since = args.get("since", 0)
+            limit = min(args.get("limit", 20), 100)
+            try:
+                qs = f"{CDP_SERVER}/recent?mode=all&type=webrequest&limit={limit}"
+                if since:
+                    qs += f"&since={since}"
+                req = urllib.request.Request(qs)
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    result = json.loads(r.read().decode())
+                events = result.get("events", [])
+                if ev_filter:
+                    events = [e for e in events if e.get("event") == ev_filter]
+                lines = [f"🌐 {len(events)} network requests:", ""]
+                for e in events[:limit]:
+                    ev = e.get("event", "?")
+                    method = e.get("method", "?")
+                    status = e.get("statusCode", "?")
+                    url = e.get("url", "")[:100]
+                    lines.append(f"  {ev.upper()} {method} {status} {url}")
+                if len(lines) <= 2:
+                    lines.append("  (no matching network requests found)")
+                return "\n".join(lines)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif name == "browser_response_body":
+            since = args.get("since", 0)
+            limit = min(args.get("limit", 5), 20)
+            try:
+                qs = f"{CDP_SERVER}/recent?mode=all&type=response_body&limit={limit}"
+                if since:
+                    qs += f"&since={since}"
+                req = urllib.request.Request(qs)
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    result = json.loads(r.read().decode())
+                events = result.get("events", [])
+                include_body = args.get("include_body", False)
+                lines = [f"📄 {len(events)} captured response bodies:", ""]
+                for e in events[:limit]:
+                    url = e.get("url", "")[:100]
+                    mime = e.get("mimeType", "?")
+                    body = e.get("body", "")
+                    b64 = e.get("base64Encoded", False)
+                    size = len(body)
+                    lines.append(f"  {url}")
+                    lines.append(f"     MIME: {mime}  Size: {size}  Base64: {b64}")
+                    if include_body and body:
+                        snippet = body[:500]
+                        if b64:
+                            try:
+                                snippet = base64.b64decode(body[:500]).decode("utf-8", errors="replace")[:500]
+                            except Exception:
+                                pass
+                        lines.append(f"     Body: {snippet}")
+                if len(lines) <= 2:
+                    lines.append("  (no response bodies captured yet)")
+                return "\n".join(lines)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif name == "browser_set_cookie":
+            params = {
+                "name": args["name"],
+                "value": args["value"],
+            }
+            if "url" in args: params["url"] = args["url"]
+            if "domain" in args: params["domain"] = args["domain"]
+            if "path" in args: params["path"] = args["path"]
+            if args.get("secure"): params["secure"] = True
+            if args.get("httpOnly"): params["httpOnly"] = True
+            if "sameSite" in args: params["sameSite"] = args["sameSite"]
+            result = _cdp("Network.setCookie", params)
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            r = result.get("result", {})
+            success = r.get("success", False)
+            return json.dumps({
+                "success": success,
+                "cookie": params.get("name"),
+                "domain": params.get("domain", params.get("url", "any")),
+            }, indent=2)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 

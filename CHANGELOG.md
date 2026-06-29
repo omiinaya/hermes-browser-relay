@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.0 (2026-06-29)
+
+### Added
+- Popup tab selector with attach/detach per-tab buttons, auto-attach toggle, connection status
+- `browser_find` — search page text for pattern, return matching elements with coords and ref IDs
+- `browser_pdf` — save current page as PDF via CDP `Page.printToPDF` (landscape, scale support)
+- `tab_id` auto-injected on all MCP and Plugin tools via programmatic schema injection
+- `browser_wait_for_navigation` — poll event buffer for fresh navigation, returns URL/title of new page
+- `browser_network_requests` — query captured webRequest events from relay buffer (`?type=webrequest` + event filter)
+- `browser_response_body` — query captured response bodies (JSON/PDF/matched patterns) from relay buffer
+- `browser_set_cookie` — inject cookies via CDP `Network.setCookie` (name, value, domain, path, secure, httpOnly, sameSite)
+- Relay `/recent` endpoint now supports `?type=`, `?since=` filters for targeted event queries
+
+### Changed
+- Version bumped to 1.5.0 (1.0.0 → 1.5.0: 5 minor versions of accumulated features)
+- Relay `/recent` now captures all buffered events before filtering (was last *N*, now filters full buffer)
+- Plugin `base64` import moved to module level (was inline in browser_pdf only)
+
 ## v1.4.0 (2026-06-29)
 
 ### Added
