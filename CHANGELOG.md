@@ -12,6 +12,15 @@
     uses `document.execCommand('insertText')` for React compatibility
   - `browser_get_text` — return rendered page text (10x faster than vision)
   - `browser_screenshot_annotated` — screenshot with numbered element overlay
+  - `browser_key` — press arbitrary keyboard keys (Escape, Tab, ArrowDown, etc.)
+  - `browser_back` — navigate back in browser history
+
+### Changed
+- `browser_type` now uses `document.execCommand('insertText')` for React/Next.js
+  controlled input compatibility (was setting `el.value` directly)
+
+### Plugin
+- Full Hermes plugin with all 18 tools at `plugins/browser-relay/`
 
 ## v1.2.0 (2026-06-28)
 
