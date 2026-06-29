@@ -394,6 +394,72 @@ async def handle_recent(request):
     })
 
 
+async def handle_tabs_list(request):
+    """HTTP endpoint: list all open tabs from the extension."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response(
+            {"error": "Extension not connected", "hint": "Open Chrome extension and click Attach"},
+            status=503,
+        )
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "list"}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send tab list command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        tabs = result.get("tabs", [])
+        return web.json_response({"count": len(tabs), "tabs": tabs})
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Tab list timed out"}, status=504)
+
+
+async def handle_tabs_switch(request):
+    """HTTP endpoint: switch to a specific tab by tabId."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response(
+            {"error": "Extension not connected", "hint": "Open Chrome extension and click Attach"},
+            status=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    tab_id = body.get("tabId")
+    if tab_id is None:
+        return web.json_response({"error": "Missing 'tabId'"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "switch", "tabId": tab_id}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send tab switch command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Tab switch timed out"}, status=504)
+
+
 async def shutdown():
     """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
@@ -449,6 +515,8 @@ async def main():
     app.router.add_get("/events", handle_events_sse)
     app.router.add_get("/recent", handle_recent)
     app.router.add_get("/stats", handle_status)
+    app.router.add_get("/tabs", handle_tabs_list)
+    app.router.add_post("/tabs/switch", handle_tabs_switch)
 
     print()
     print("  ╔═══════════════════════════════════════╗")

@@ -329,6 +329,43 @@ function stopClientHeartbeat() {
   }
 }
 
+// ====== Tab List / Switch (from Server) ======
+
+function handleTabCommand(msg) {
+  const id = msg.id;
+  const command = msg.tabCommand; // 'list' or 'switch'
+  const tabId = msg.tabId;
+
+  if (command === 'list') {
+    chrome.tabs.query({}, (tabs) => {
+      const tabList = tabs.map(t => ({
+        id: t.id,
+        index: t.index,
+        title: t.title || '',
+        url: t.url || '',
+        active: t.active,
+        windowId: t.windowId,
+        pinned: t.pinned,
+      }));
+      safeSend({ id, type: 'tab-list', tabs: tabList });
+    });
+    return true;
+  }
+
+  if (command === 'switch') {
+    if (tabId == null) {
+      safeSend({ id, type: 'tab-switch', success: false, error: 'No tabId' });
+      return true;
+    }
+    attachToTab(tabId).then((result) => {
+      safeSend({ id, type: 'tab-switch', ...result });
+    });
+    return true;
+  }
+
+  return false;
+}
+
 // ====== Reattach Watcher ======
 
 function startReattachWatcher() {
@@ -365,7 +402,12 @@ function handleServerMessage(msg) {
     return;
   }
   if (msgType === 'pong') {
-    // Server responded to our ping — connection is alive
+    return;
+  }
+
+  // Handle tab list / switch commands
+  if (msg.tabCommand) {
+    handleTabCommand(msg);
     return;
   }
 

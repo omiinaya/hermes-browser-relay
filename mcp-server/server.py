@@ -333,6 +333,51 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="browser_list_tabs",
+            description="List all open browser tabs with their IDs, titles, URLs, and active status. Use this before browser_switch_tab to find the tab you want.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_switch_tab",
+            description="Switch to a tab by its tab ID (from browser_list_tabs), or by URL/title keyword. Pass tabId directly, or use keyword to match against URL or title.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "Tab ID from browser_list_tabs (mutually exclusive with keyword)"},
+                    "keyword": {"type": "string", "description": "URL or title keyword to search for (mutually exclusive with tab_id)"},
+                },
+            },
+        ),
+        Tool(
+            name="browser_get_cookies",
+            description="Read all cookies for the current page via CDP Network.getCookies. Returns cookie name, value, domain, path, expiry, and flags.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_clear_cookies",
+            description="Clear all cookies for the current page via CDP Network.clearBrowserCookies.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="browser_get_downloads",
+            description="List recent downloads captured by the extension. Returns download ID, URL, filename, total bytes, and state (created/changed).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max downloads to return (default: 20, max: 50)", "default": 20},
+                },
+            },
+        ),
     ]
 
 
@@ -827,6 +872,127 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 msg_text = " ".join(text_parts)
                 icon = {"log": "📝", "warning": "⚠️", "error": "❌", "debug": "🔍", "info": "ℹ️"}.get(level, "📝")
                 lines.append(f"  {icon} [{level}] {msg_text[:300]}")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "browser_list_tabs":
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if "error" in result:
+                    return [TextContent(type="text", text=f"Error: {result['error']}")]
+                tabs = result.get("tabs", [])
+                if not tabs:
+                    return [TextContent(type="text", text="No tabs found.")]
+                lines = [f"📑 {len(tabs)} open tabs:", ""]
+                for t in tabs:
+                    active = "🟢" if t.get("active") else "  "
+                    title = (t.get("title", "") or "").strip()[:60]
+                    url = (t.get("url", "") or "").strip()[:80]
+                    lines.append(f"  {active} [{t['id']}] {title}")
+                    lines.append(f"              {url}")
+                return [TextContent(type="text", text="\n".join(lines))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error listing tabs: {e}")]
+
+        elif name == "browser_switch_tab":
+            tab_id = arguments.get("tab_id")
+            keyword = arguments.get("keyword")
+            if not tab_id and not keyword:
+                return [TextContent(type="text", text="Provide either tab_id or keyword to find the tab.")]
+
+            # If keyword given, find matching tab first
+            if keyword and not tab_id:
+                try:
+                    req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        result = json.loads(resp.read().decode())
+                    if "error" in result:
+                        return [TextContent(type="text", text=f"Error: {result['error']}")]
+                    kw = keyword.lower()
+                    matches = [t for t in result.get("tabs", [])
+                               if kw in (t.get("title", "") or "").lower()
+                               or kw in (t.get("url", "") or "").lower()]
+                    if not matches:
+                        return [TextContent(type="text", text=f"No tab found matching '{keyword}'")]
+                    tab_id = matches[0]["id"]
+                    if len(matches) > 1:
+                        return [TextContent(type="text", text=f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
+                            f"  [{t['id']}] {t.get('title','')[:60]}"
+                            for t in matches))]
+                except Exception as e:
+                    return [TextContent(type="text", text=f"Error searching tabs: {e}")]
+
+            # Switch to the tab
+            body = json.dumps({"tabId": tab_id}).encode()
+            switch_req = urllib.request.Request(f"{CDP_SERVER}/tabs/switch", data=body, method="POST")
+            switch_req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(switch_req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    return [TextContent(type="text", text=f"✅ Switched to tab {tab_id}")]
+                return [TextContent(type="text", text=f"Switch failed: {result.get('error', 'unknown')}")]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error switching tab: {e}")]
+
+        elif name == "browser_get_cookies":
+            result = _cdp("Network.getCookies")
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            cookies = result.get("result", {}).get("cookies", [])
+            if not cookies:
+                return [TextContent(type="text", text="No cookies for the current page.")]
+            lines = [f"🍪 {len(cookies)} cookies:", ""]
+            for c in cookies:
+                name = c.get("name", "?")
+                value = c.get("value", "")
+                domain = c.get("domain", "")
+                path = c.get("path", "")
+                httponly = "🔒" if c.get("httpOnly") else "  "
+                secure = "🔐" if c.get("secure") else "  "
+                session = "📄" if c.get("session") else "⏳"
+                expiry = ""
+                if not c.get("session"):
+                    import datetime
+                    exp = c.get("expires", 0)
+                    if exp:
+                        try:
+                            expiry = f" (expires {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d')})"
+                        except Exception:
+                            expiry = ""
+                lines.append(f"  {httponly}{secure}{session} {name}={value[:80]}{expiry}")
+                lines.append(f"         Domain: {domain}{path}")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "browser_clear_cookies":
+            result = _cdp("Network.clearBrowserCookies")
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            return [TextContent(type="text", text="🧹 All cookies cleared.")]
+
+        elif name == "browser_get_downloads":
+            limit = min(arguments.get("limit", 20), 50)
+            dl_result = _query_capture(f"/recent?limit={limit * 2}&mode=all")
+            if "error" in dl_result:
+                return [TextContent(type="text", text=f"Error: {dl_result['error']}")]
+            events = dl_result.get("events", [])
+            dl_events = [e for e in events if e.get("type") == "download"]
+            dl_events = dl_events[:limit]
+            if not dl_events:
+                return [TextContent(type="text", text="No recent downloads captured.")]
+            lines = [f"📥 {len(dl_events)} recent downloads:", ""]
+            for d in dl_events:
+                evt = d.get("event", "?")
+                icon = "🆕" if evt == "created" else "✅" if evt == "changed" else "📄"
+                filename = d.get("filename", d.get("url", "?")).split("/")[-1][:60]
+                url = (d.get("url", "") or "")[:80]
+                state = d.get("state", "")
+                total = d.get("totalBytes", 0)
+                lines.append(f"  {icon} {filename}")
+                lines.append(f"     {url}")
+                if state: lines.append(f"     State: {state}")
+                if total: lines.append(f"     Size: {total} bytes")
             return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "browser_recent_events":

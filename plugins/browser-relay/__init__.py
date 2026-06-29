@@ -289,7 +289,52 @@ TOOL_SCHEMAS = [
             },
         },
     },
-    ]
+    {
+        "name": "browser_list_tabs",
+        "description": "List all open browser tabs with their IDs, titles, URLs, and active status. Use before browser_switch_tab.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "browser_switch_tab",
+        "description": "Switch to a tab by its tab ID (from browser_list_tabs), or by URL/title keyword.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID from browser_list_tabs"},
+                "keyword": {"type": "string", "description": "URL or title keyword to search for"},
+            },
+        },
+    },
+    {
+        "name": "browser_get_cookies",
+        "description": "Read all cookies for the current page via CDP. Returns name, value, domain, path, expiry.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "browser_clear_cookies",
+        "description": "Clear all cookies for the current page via CDP.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "browser_get_downloads",
+        "description": "List recent downloads captured by the extension. Returns filename, URL, state, size.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max downloads (default: 20, max: 50)", "default": 20},
+            },
+        },
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +707,128 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 msg_text = " ".join(text_parts)
                 icon = {"log": "📝", "warning": "⚠️", "error": "❌", "debug": "🔍", "info": "ℹ️"}.get(level, "📝")
                 lines.append(f"  {icon} [{level}] {msg_text[:300]}")
+            return "\n".join(lines)
+
+        elif name == "browser_list_tabs":
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if "error" in result:
+                    return json.dumps({"error": result["error"]})
+                tabs = result.get("tabs", [])
+                if not tabs:
+                    return "No tabs found."
+                lines = [f"📑 {len(tabs)} open tabs:", ""]
+                for t in tabs:
+                    active = "🟢" if t.get("active") else "  "
+                    title = (t.get("title", "") or "").strip()[:60]
+                    url = (t.get("url", "") or "").strip()[:80]
+                    lines.append(f"  {active} [{t['id']}] {title}")
+                    lines.append(f"              {url}")
+                return "\n".join(lines)
+            except Exception as e:
+                return json.dumps({"error": f"Error listing tabs: {e}"})
+
+        elif name == "browser_switch_tab":
+            tab_id = args.get("tab_id")
+            keyword = args.get("keyword")
+            if not tab_id and not keyword:
+                return "Provide either tab_id or keyword to find the tab."
+
+            # If keyword given, find matching tab first
+            if keyword and not tab_id:
+                try:
+                    req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        result = json.loads(resp.read().decode())
+                    if "error" in result:
+                        return json.dumps({"error": result["error"]})
+                    kw = keyword.lower()
+                    matches = [t for t in result.get("tabs", [])
+                               if kw in (t.get("title", "") or "").lower()
+                               or kw in (t.get("url", "") or "").lower()]
+                    if not matches:
+                        return f"No tab found matching '{keyword}'"
+                    tab_id = matches[0]["id"]
+                    if len(matches) > 1:
+                        return f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
+                            f"  [{t['id']}] {t.get('title','')[:60]}" for t in matches)
+                except Exception as e:
+                    return json.dumps({"error": f"Error searching tabs: {e}"})
+
+            body = json.dumps({"tabId": tab_id}).encode()
+            switch_req = urllib.request.Request(f"{CDP_SERVER}/tabs/switch", data=body, method="POST")
+            switch_req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(switch_req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    return f"✅ Switched to tab {tab_id}"
+                return f"Switch failed: {result.get('error', 'unknown')}"
+            except Exception as e:
+                return json.dumps({"error": f"Error switching tab: {e}"})
+
+        elif name == "browser_get_cookies":
+            result = _cdp("Network.getCookies")
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            cookies = result.get("result", {}).get("cookies", [])
+            if not cookies:
+                return "No cookies for the current page."
+            lines = [f"🍪 {len(cookies)} cookies:", ""]
+            for c in cookies:
+                name = c.get("name", "?")
+                value = c.get("value", "")
+                domain = c.get("domain", "")
+                path = c.get("path", "")
+                httponly = "🔒" if c.get("httpOnly") else "  "
+                secure = "🔐" if c.get("secure") else "  "
+                session = "📄" if c.get("session") else "⏳"
+                expiry = ""
+                if not c.get("session"):
+                    import datetime
+                    exp = c.get("expires", 0)
+                    if exp:
+                        try:
+                            expiry = f" (expires {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d')})"
+                        except Exception:
+                            expiry = ""
+                lines.append(f"  {httponly}{secure}{session} {name}={value[:80]}{expiry}")
+                lines.append(f"         Domain: {domain}{path}")
+            return "\n".join(lines)
+
+        elif name == "browser_clear_cookies":
+            result = _cdp("Network.clearBrowserCookies")
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            return "🧹 All cookies cleared."
+
+        elif name == "browser_get_downloads":
+            limit = min(args.get("limit", 20), 50)
+            try:
+                req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    dl_result = json.loads(r.read().decode())
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+            events = dl_result.get("events", [])
+            dl_events = [e for e in events if e.get("type") == "download"]
+            dl_events = dl_events[:limit]
+            if not dl_events:
+                return "No recent downloads captured."
+            lines = [f"📥 {len(dl_events)} recent downloads:", ""]
+            for d in dl_events:
+                evt = d.get("event", "?")
+                icon = "🆕" if evt == "created" else "✅" if evt == "changed" else "📄"
+                filename = d.get("filename", d.get("url", "?")).split("/")[-1][:60]
+                url = (d.get("url", "") or "")[:80]
+                state = d.get("state", "")
+                total = d.get("totalBytes", 0)
+                lines.append(f"  {icon} {filename}")
+                lines.append(f"     {url}")
+                if state: lines.append(f"     State: {state}")
+                if total: lines.append(f"     Size: {total} bytes")
             return "\n".join(lines)
 
         elif name == "browser_select_option":
