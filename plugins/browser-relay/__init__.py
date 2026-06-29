@@ -95,6 +95,17 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "browser_hover",
+        "description": "Hover the mouse over an element by CSS selector. Dispatches mouseMoved to trigger mouseenter/mouseover for dropdowns and tooltips.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector (e.g. '.menu-item', '#tooltip-trigger')"},
+            },
+            "required": ["selector"],
+        },
+    },
+    {
         "name": "browser_click",
         "description": "Click an element by CSS selector.",
         "parameters": {
@@ -307,6 +318,26 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 "expression": args["expression"], "returnByValue": True
             })
             return str(_parse_result(result))
+
+        elif name == "browser_hover":
+            selector = args["selector"]
+            find_expr = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const r = el.getBoundingClientRect();
+                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+            }})()
+            """
+            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
+            coords = _parse_result(find_result)
+            if isinstance(coords, dict) and "error" in coords:
+                return f"Error: {coords['error']}"
+            if isinstance(coords, dict) and "x" in coords:
+                x, y = round(coords["x"]), round(coords["y"])
+                _cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+                return f"Hovered '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
+            return f"Unexpected: {json.dumps(coords, indent=2)}"
 
         elif name == "browser_click":
             selector = args["selector"]

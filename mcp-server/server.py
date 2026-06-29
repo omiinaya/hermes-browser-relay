@@ -135,6 +135,17 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="browser_hover",
+            description="Hover the mouse over an element by CSS selector. Dispatches CDP mouseMoved event to trigger mouseenter/mouseover for dropdowns and tooltips.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector (e.g. '.menu-item', '#tooltip-trigger')"},
+                },
+                "required": ["selector"],
+            },
+        ),
+        Tool(
             name="browser_click",
             description="Click an element by CSS selector. Finds coordinates via JS, dispatches CDP mouse events.",
             inputSchema={
@@ -314,6 +325,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             result = _cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True})
             value = _parse_result(result)
             return [TextContent(type="text", text=str(value))]
+
+        elif name == "browser_hover":
+            selector = arguments["selector"]
+            # Find element coordinates via JS (same as click)
+            find_expr = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const r = el.getBoundingClientRect();
+                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+            }})()
+            """
+            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
+            coords = _parse_result(find_result)
+            if isinstance(coords, dict) and "error" in coords:
+                return [TextContent(type="text", text=f"Error: {coords['error']}")]
+            if isinstance(coords, dict) and "x" in coords:
+                x, y = round(coords["x"]), round(coords["y"])
+                _cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+                desc = f"Hovered '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
+                return [TextContent(type="text", text=desc)]
+            return [TextContent(type="text", text=f"Unexpected: {json.dumps(coords, indent=2)}")]
 
         elif name == "browser_click":
             selector = arguments["selector"]

@@ -4,11 +4,12 @@
 
 ## Status: PENDING
 
-### P1 — browser_hover
+### ✅ P1 — browser_hover
 Hover the mouse over an element by CSS selector. Drives dropdown menus and tooltip triggers that activate on `mouseenter`.
 Files: mcp-server/server.py, plugins/browser-relay/__init__.py
 Difficulty: Easy
 Est: 5 min
+*Implemented: Added browser_hover tool definition + handler to mcp-server/server.py and plugins/browser-relay/__init__.py. Uses Input.dispatchMouseEvent with type 'mouseMoved' at element center coordinates.*
 
 ### P2 — browser_select_option
 Select an `<option>` in a `<select>` dropdown by visible text. Currently requires `browser_eval("...")` to set each dropdown.
