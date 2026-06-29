@@ -304,7 +304,7 @@ async def handle_status(request):
     now = _now()
     uptime = now - server_start_time
     return web.json_response({
-        "version": "1.3.0",
+        "version": "1.4.0",
         "extension_connected": extension_ws is not None and not extension_ws.closed,
         "tab_id": tab_id,
         "extension_info": extension_info,
@@ -460,6 +460,65 @@ async def handle_tabs_switch(request):
         return web.json_response({"error": "Tab switch timed out"}, status=504)
 
 
+async def handle_block_patterns(request):
+    """HTTP endpoint: set blocked URL patterns for request blocking via DNR."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    patterns = body.get("patterns", [])
+    if not isinstance(patterns, list):
+        return web.json_response({"error": "patterns must be an array of strings"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "blockCommand": "set", "patterns": patterns}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send block patterns"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Block patterns set timed out"}, status=504)
+
+
+async def handle_block_patterns_get(request):
+    """HTTP endpoint: get current blocked URL patterns."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "blockCommand": "get"}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to get block patterns"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=5)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Block patterns get timed out"}, status=504)
+
+
 async def shutdown():
     """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
@@ -517,10 +576,12 @@ async def main():
     app.router.add_get("/stats", handle_status)
     app.router.add_get("/tabs", handle_tabs_list)
     app.router.add_post("/tabs/switch", handle_tabs_switch)
+    app.router.add_post("/block/patterns", handle_block_patterns)
+    app.router.add_get("/block/patterns", handle_block_patterns_get)
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v1.3.0           ║")
+    print("  ║     CDP Relay Server v1.4.0           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
     print(f"  Extension WS: ws://{args.host}:{args.port}/ws")
@@ -528,6 +589,8 @@ async def main():
     print(f"  Status:       http://{args.host}:{args.port}/status")
     print(f"  Events (SSE): http://{args.host}:{args.port}/events")
     print(f"  Recent:       http://{args.host}:{args.port}/recent?limit=20&mode=nav")
+    print(f"  Tabs:         http://{args.host}:{args.port}/tabs")
+    print(f"  Block:        http://{args.host}:{args.port}/block/patterns")
     print()
     print("  Install extension → chrome://extensions/ → Load unpacked")
     print(f"  → {Path(__file__).parent / 'extension'}")

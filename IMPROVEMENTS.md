@@ -2,29 +2,20 @@
 2|
 3|---
 4|
-5|## Status: PENDING
-6|
-7|### P9 — Automatic MCP reconnect watchdog
-8|When the relay restarts, MCP tools break until someone runs `hermes mcp test`. A watchdog that auto-refreshes the MCP connection would eliminate the manual step.
-9|Files: server.py (heartbeat), mcp-server/server.py
-10|Difficulty: Medium
-11|Est: 20 min
-12|
-13|### P10 — browser_block_patterns
-14|Network request blocking via CDP `Network.setRequestInterception`. Block CSS, images, fonts to speed up scraping.
-15|Files: mcp-server/server.py, plugins/browser-relay/__init__.py
-16|Difficulty: Hard
-17|Est: 30 min
-18|
-19|### P11 — Multi-tab attach support
-20|Support attaching to tab N while listing all open tabs. Currently one tab at a time.
-21|Files: server.py, mcp-server/server.py, plugins/browser-relay/__init__.py, extension/background.js
-22|Difficulty: Hard
-23|Est: 45 min
-24|
-25|---
-26|
-27|## Recently Completed
+## Status: PENDING
+
+### P11 — Multi-tab attach support
+Support attaching to tab N while listing all open tabs. Currently one tab at a time.
+Files: server.py, mcp-server/server.py, plugins/browser-relay/__init__.py, extension/background.js
+Difficulty: Hard
+Est: 45 min
+
+---
+
+## Recently Completed
+
+### P10 — browser_block_patterns
+Network request blocking via Chrome's declarativeNetRequest API (MV3 native). Uses `chrome.declarativeNetRequest.updateDynamicRules()` to add/remove URL-filter rules. Supports glob-style patterns: `*.css`, `*analytics*`, `/path/*`. Background.js stores blocked patterns and creates DNR rules; relay server has `POST/GET /block/patterns` endpoints; tools at both MCP and plugin layers.
 28|
 29|### P8 — browser_get_downloads
 30|List completed downloads with local file paths. The extension already captures `downloads.onCreated`/`onChanged` events, but there was no tool to query the download state.

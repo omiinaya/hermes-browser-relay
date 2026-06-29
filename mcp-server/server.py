@@ -423,6 +423,21 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="browser_block_patterns",
+            description="Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API (MV3). Pass patterns=[\"*.css\",\"*.jpg\",\"*analytics*\"] to block, or patterns=[] to clear all blocks. Supports glob-style: *.css, *analytics*, https://example.com/*",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "URL patterns to block. Empty array to clear all blocks. Supports *.css, *analytics*, /path/* formats",
+                    },
+                },
+                "required": ["patterns"],
+            },
+        ),
     ]
 
 
@@ -1043,6 +1058,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 if state: lines.append(f"     State: {state}")
                 if total: lines.append(f"     Size: {total} bytes")
             return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "browser_block_patterns":
+            patterns = arguments.get("patterns", [])
+            if not isinstance(patterns, list):
+                return [TextContent(type="text", text="Error: patterns must be an array of strings")]
+            body = json.dumps({"patterns": patterns}).encode()
+            req = urllib.request.Request(f"{CDP_SERVER}/block/patterns", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    if patterns:
+                        return [TextContent(type="text", text=f"🚫 Blocking {len(patterns)} patterns: {', '.join(patterns[:10])}")]
+                    return [TextContent(type="text", text="✅ All blocking patterns cleared")]
+                return [TextContent(type="text", text=f"Error: {json.dumps(result)}")]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
 
         elif name == "browser_recent_events":
             limit = min(arguments.get("limit", 20), 200)

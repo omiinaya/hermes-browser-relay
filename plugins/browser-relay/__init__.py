@@ -334,6 +334,21 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "browser_block_patterns",
+        "description": "Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API. Pass patterns=[\"*.css\",\"*analytics*\"] to block, or patterns=[] to clear.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "URL patterns to block. Empty array to clear all. Supports *.css, *analytics*, /path/*",
+                },
+            },
+            "required": ["patterns"],
+        },
+    },
 ]
 
 
@@ -830,6 +845,24 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 if state: lines.append(f"     State: {state}")
                 if total: lines.append(f"     Size: {total} bytes")
             return "\n".join(lines)
+
+        elif name == "browser_block_patterns":
+            patterns = args.get("patterns", [])
+            if not isinstance(patterns, list):
+                return json.dumps({"error": "patterns must be an array of strings"})
+            body = json.dumps({"patterns": patterns}).encode()
+            req = urllib.request.Request(f"{CDP_SERVER}/block/patterns", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success"):
+                    if patterns:
+                        return f"🚫 Blocking {len(patterns)} patterns: {', '.join(patterns[:10])}"
+                    return "✅ All blocking patterns cleared"
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
         elif name == "browser_select_option":
             selector = args["selector"]
