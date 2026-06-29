@@ -2,7 +2,7 @@
 
 A Chrome DevTools Protocol relay server that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 1.2.0** — Features heartbeat keepalive, exponential backoff reconnect, tab-switch auto-reattach, stale request sweep, and graceful shutdown.
+**Version 1.3.0** — Features snapshot/scroll/wait/fill tools, heartbeat keepalive, exponential backoff reconnect, tab-switch auto-reattach, stale request sweep, and graceful shutdown.
 
 ## Architecture
 
@@ -32,26 +32,31 @@ A Chrome DevTools Protocol relay server that bridges remote browser control betw
 
 **Capture Server** (`capture_server.py`, port `:9988`) — legacy standalone logging server (optional, captured events are also available via the relay server)
 
-## What's New in v1.1.0
+## What's New in v1.3.0
 
-- ✅ **Heartbeat keepalive** — bidirectional ping/pong every 15s; detects stale connections in 45s
-- ✅ **Exponential backoff reconnect** — 1s → 3s → 9s → 27s → 60s (max); resets on successful connect
-- ✅ **Tab-switch auto-reattach** — debugger follows you when you switch tabs
-- ✅ **Stale request sweep** — pending CDP commands older than 120s are auto-cancelled
-- ✅ **Graceful shutdown** — SIGTERM/SIGINT cleanly close WS, cancel pending, stop background tasks
-- ✅ **Safe send** — all `ws.send()` calls wrapped in try/catch; silent failures never crash the service worker
+- ✅ **7 new MCP tools** — `browser_snapshot`, `browser_scroll`, `browser_wait_selector`, `browser_click_text`, `browser_fill_by_label`, `browser_get_text`, `browser_screenshot_annotated`
+- ✅ **Page snapshot** — interactive element map with ref IDs and coordinates (like Hermes native `browser_snapshot`)
+- ✅ **Click by text** — find and click elements by visible text content, no CSS selector needed
+- ✅ **Form fill by label** — find fields by label text, placeholder, or aria-label; uses `execCommand('insertText')` for React compatibility
+- ✅ **Wait for element** — poll until CSS selector appears (visible or attached), configurable timeout
+- ✅ **Scroll tool** — scroll by direction/amount without JS expressions
+- ✅ **Annotated screenshot** — screenshot + numbered element overlay
+- ✅ **Get page text** — return rendered page content in one call (10x faster than vision)
+- ✅ **Unified event capture** — `/recent` endpoint on relay server with in-memory buffer
+- ✅ **SIGTERM buffer dump** — in-memory events written to JSONL on graceful shutdown
+- ✅ **`?raw=true` on `/recent`** — raw JSONL output for Unix pipe chaining
 
 ## Quick Start
 
 ```bash
-# Start the CDP relay server
+# Start the CDP relay server (handles CDP commands + event capture)
 python3 server.py
-
-# Start the capture server (optional, for event logging)
-python3 capture_server.py
 
 # Load the Chrome extension
 # chrome://extensions/ → Load unpacked → extension/
+
+# Optional: legacy capture server (capture merged into relay)
+# python3 capture_server.py
 ```
 
 The extension auto-connects to `ws://127.0.0.1:9223/ws` and auto-attaches to the active tab.

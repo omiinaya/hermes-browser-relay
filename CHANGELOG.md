@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.0 (2026-06-28)
+
+### Added
+- 7 new MCP tools for agent efficiency:
+  - `browser_snapshot` — accessibility-style element map with ref IDs and coordinates
+  - `browser_scroll` — scroll page by direction or pixel amount
+  - `browser_wait_selector` — poll until CSS selector appears (visible or attached)
+  - `browser_click_text` — click by visible text content, no CSS selector needed
+  - `browser_fill_by_label` — find form fields by label/placeholder/aria-label,
+    uses `document.execCommand('insertText')` for React compatibility
+  - `browser_get_text` — return rendered page text (10x faster than vision)
+  - `browser_screenshot_annotated` — screenshot with numbered element overlay
+
 ## v1.2.0 (2026-06-28)
 
 ### Added

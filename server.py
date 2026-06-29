@@ -304,7 +304,7 @@ async def handle_status(request):
     now = _now()
     uptime = now - server_start_time
     return web.json_response({
-        "version": "1.1.0",
+        "version": "1.3.0",
         "extension_connected": extension_ws is not None and not extension_ws.closed,
         "tab_id": tab_id,
         "extension_info": extension_info,
@@ -452,7 +452,7 @@ async def main():
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v1.1.0           ║")
+    print("  ║     CDP Relay Server v1.3.0           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
     print(f"  Extension WS: ws://{args.host}:{args.port}/ws")
