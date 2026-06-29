@@ -3,189 +3,198 @@
 <head>
   <meta charset="utf-8">
   <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 360px;
-      padding: 16px;
+      width: 420px;
+      max-height: 500px;
+      padding: 12px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #1a1a2e;
       color: #e0e0e0;
       margin: 0;
+      font-size: 13px;
     }
-    
     h1 {
-      margin: 0 0 16px 0;
-      font-size: 20px;
+      margin: 0 0 10px 0;
+      font-size: 16px;
       color: #4fc3f7;
       display: flex;
       align-items: center;
       gap: 8px;
     }
-    
-    h1 span {
-      font-size: 12px;
-      color: #666;
-      background: #16213e;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    
+    h1 span { font-size: 11px; color: #666; background: #16213e; padding: 1px 5px; border-radius: 3px; font-weight: 400; }
     .section {
       background: #16213e;
-      border-radius: 8px;
-      padding: 12px;
-      margin-bottom: 12px;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
     }
-    
     .section-title {
-      font-size: 12px;
+      font-size: 11px;
       color: #4fc3f7;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
-    
-    .status-row {
+    .row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
+      gap: 6px;
+      margin-bottom: 4px;
     }
-    
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-    }
-    
-    .dot.green { background: #4caf50; box-shadow: 0 0 6px #4caf5066; }
-    .dot.blue { background: #2196f3; box-shadow: 0 0 6px #2196f366; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green { background: #4caf50; box-shadow: 0 0 4px #4caf5066; }
+    .dot.blue { background: #2196f3; box-shadow: 0 0 4px #2196f366; }
     .dot.yellow { background: #ff9800; }
     .dot.gray { background: #555; }
     .dot.red { background: #f44336; }
-    
-    .status-label {
-      font-size: 13px;
+    .label { flex: 1; font-size: 12px; }
+    .label-sm { font-size: 11px; color: #888; }
+    input[type="text"] {
       flex: 1;
-    }
-    
-    .tab-id {
+      background: #0f0f1a;
+      border: 1px solid #2a2a3e;
+      border-radius: 5px;
+      padding: 6px 8px;
+      color: #e0e0e0;
       font-size: 11px;
-      color: #888;
       font-family: monospace;
+      outline: none;
     }
-    
+    input[type="text"]:focus { border-color: #4fc3f7; }
     .btn {
-      display: block;
-      width: 100%;
-      padding: 10px 16px;
-      margin-bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
       border: none;
-      border-radius: 8px;
-      font-size: 13px;
+      border-radius: 5px;
+      font-size: 11px;
       font-weight: 500;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: all 0.12s;
+      white-space: nowrap;
     }
-    
-    .btn:active { transform: scale(0.97); }
-    
-    .btn-primary {
-      background: #4fc3f7;
-      color: #0f0f1a;
-    }
+    .btn:active { transform: scale(0.96); }
+    .btn-primary { background: #4fc3f7; color: #0f0f1a; }
     .btn-primary:hover { background: #29b6f6; }
     .btn-primary:disabled { background: #2a2a3e; color: #555; cursor: not-allowed; }
-    
-    .btn-danger {
-      background: #f44336;
-      color: #fff;
-    }
+    .btn-danger { background: #f44336; color: #fff; }
     .btn-danger:hover { background: #e53935; }
     .btn-danger:disabled { background: #2a2a3e; color: #555; cursor: not-allowed; }
-    
-    .btn-outline {
-      background: transparent;
-      border: 1px solid #4fc3f733;
-      color: #4fc3f7;
-    }
+    .btn-sm { padding: 4px 8px; font-size: 10px; }
+    .btn-outline { background: transparent; border: 1px solid #4fc3f733; color: #4fc3f7; }
     .btn-outline:hover { background: #4fc3f711; }
-    
-    .btn-row {
+    .btn-attach { background: #2e7d32; color: #fff; }
+    .btn-attach:hover { background: #388e3c; }
+    .btn-attach:disabled { background: #1a3a1a; color: #555; cursor: not-allowed; }
+    .btn-detach { background: #c62828; color: #fff; padding: 2px 6px; font-size: 10px; }
+    .btn-detach:hover { background: #d32f2f; }
+
+    .tab-list { max-height: 220px; overflow-y: auto; }
+    .tab-list::-webkit-scrollbar { width: 5px; }
+    .tab-list::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 3px; }
+
+    .tab-item {
       display: flex;
-      gap: 8px;
-    }
-    .btn-row .btn { margin-bottom: 0; }
-    
-    .help {
-      margin-top: 12px;
-      padding: 10px;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 6px;
+      border-radius: 4px;
+      margin-bottom: 2px;
       background: #0f0f1a;
-      border-radius: 6px;
-      font-size: 11px;
-      color: #666;
-      line-height: 1.5;
+      transition: background 0.1s;
     }
-    
-    .help code {
-      color: #4fc3f7;
-      background: #1a1a2e;
-      padding: 1px 4px;
-      border-radius: 3px;
+    .tab-item:hover { background: #1a1a2e; }
+    .tab-item.attached { border-left: 2px solid #4caf50; }
+    .tab-info { flex: 1; min-width: 0; }
+    .tab-title { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tab-url { font-size: 9px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tab-id-badge { font-size: 9px; color: #888; font-family: monospace; background: #16213e; padding: 1px 4px; border-radius: 3px; }
+
+    .status-server { display: flex; align-items: center; gap: 6px; }
+    .status-server .label-sm { flex: 1; }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+    .toggle {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      background: #2a2a3e;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle.on { background: #4caf50; }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(16px); }
+
+    .footer { font-size: 10px; color: #555; padding: 4px 2px; }
+    .count-badge {
       font-size: 10px;
+      color: #4caf50;
+      background: #1a3a1a;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
     }
   </style>
 </head>
 <body>
-  <h1>CDP Bridge <span>v1.1</span></h1>
-  
-  <!-- Connection -->
+  <h1>🔌 CDP Bridge <span>1.4.0</span></h1>
+
+  <!-- Server Status -->
   <div class="section">
     <div class="section-title">Server</div>
-    <div class="status-row">
+    <div class="status-server">
       <div class="dot gray" id="connDot"></div>
-      <span class="status-label" id="connLabel">Disconnected</span>
+      <span class="label-sm" id="connLabel">Disconnected</span>
     </div>
-    <label style="display:block; font-size:11px; color:#888; margin:8px 0 4px;">Server URL</label>
-    <div style="display:flex; gap:6px;">
-      <input type="text" id="serverUrl" value="ws://127.0.0.1:9223/ws"
-             style="flex:1; background:#0f0f1a; border:1px solid #2a2a3e; border-radius:6px; padding:8px 10px;
-                    color:#e0e0e0; font-size:12px; font-family:monospace; outline:none;">
-      <button class="btn btn-primary" id="saveUrlBtn" style="width:auto; padding:8px 16px; margin-bottom:0;">Save</button>
+    <div class="row" style="margin-top:6px;">
+      <input type="text" id="serverUrl" value="ws://127.0.0.1:9223/ws">
+      <button class="btn btn-primary btn-sm" id="saveUrlBtn" style="padding:6px 10px;">Save</button>
     </div>
-    <button class="btn btn-primary" id="connectBtn" style="margin-top:8px;">Connect to Server</button>
+    <div class="row" style="margin-top:4px;">
+      <button class="btn btn-primary btn-sm" id="connectBtn" style="flex:1">Connect</button>
+    </div>
   </div>
-  
-  <!-- Tab -->
+
+  <!-- Tabs -->
+  <div class="section" style="padding-bottom:4px;">
+    <div class="section-title" style="display:flex; align-items:center;">
+      <span>Attached Tabs</span>
+      <span class="count-badge" id="attachCount">0</span>
+    </div>
+    <div class="tab-list" id="tabList">
+      <div class="label-sm" style="padding:8px 4px;text-align:center;color:#555;">Open a tab to see it here</div>
+    </div>
+  </div>
+
+  <!-- Settings -->
   <div class="section">
-    <div class="section-title">Debugger</div>
-    <div class="status-row">
-      <div class="dot gray" id="tabDot"></div>
-      <span class="status-label" id="tabLabel">No tab attached</span>
-    </div>
-    <div class="tab-id" id="tabIdDisplay"></div>
-    <div class="btn-row" style="margin-top: 8px;">
-      <button class="btn btn-primary" id="attachBtn" disabled style="flex:1">Attach Tab</button>
-      <button class="btn btn-danger" id="detachBtn" disabled style="flex:1">Detach</button>
+    <div class="toggle-row">
+      <span class="label-sm">Auto-attach on tab switch</span>
+      <div class="toggle" id="autoAttachToggle"></div>
     </div>
   </div>
-  
-  <!-- Diagnostics -->
-  <div class="section" style="display:none" id="diagSection">
-    <div class="section-title">Connection Health</div>
-    <div class="status-row"><span class="status-label" id="diagLastMsg">—</span></div>
-    <div class="status-row" style="font-size:11px; color:#888;"><span id="diagServerUrl">—</span></div>
-  </div>
-  
-  <!-- Help -->
-  <div class="help" style="font-size:11px; color:#888;">
-    <b>How to use:</b><br>
-    1. Extension auto-connects and auto-attaches to active tab<br>
-    2. Badge shows <b style="color:#4caf50">CDP</b> when ready<br>
-    3. Switch tabs freely — debugger follows you automatically<br>
-    4. Server sends commands via <code>POST /cdp</code><br>
-    <span style="font-size:10px;">♥ Heartbeat every 15s · auto-reconnect with backoff</span>
-  </div>
-  
+
+  <div class="footer" id="footerInfo">Last message: —</div>
+
   <script src="popup.js"></script>
 </body>
 </html>

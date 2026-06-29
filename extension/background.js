@@ -8,7 +8,8 @@ let SERVER_URL = DEFAULT_SERVER;
 let ws = null;
 let wsReconnectTimer = null;
 let attachments = new Map();  // tabId -> true (multi-tab support)
-let reconnectDelay = 1000; // Starts at 1s, backs off to max 60s
+let reconnectDelay = 1000;
+let autoAttach = true;  // User preference: auto-attach on tab activation
 
 // Connection status: 'disconnected', 'connecting', 'connected'
 let connectionStatus = 'disconnected';
@@ -663,6 +664,7 @@ function updateBadge() {
 chrome.tabs.onActivated.addListener((activeInfo) => {
   const newTabId = activeInfo.tabId;
   if (connectionStatus !== 'connected') return;
+  if (!autoAttach) return;  // User disabled auto-attach
 
   // Ignore chrome:// URLs
   chrome.tabs.get(newTabId, (tab) => {
@@ -673,7 +675,6 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
     }
 
     console.debug('[CDP] Tab activated:', newTabId, '-', tab.url);
-    // Auto-attach to newly activated tab (additive — won't detach existing)
     attachToTab(newTabId);
   });
 });
@@ -720,6 +721,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         attachedTabIds: Array.from(attachments.keys()),
         serverUrl: SERVER_URL,
         lastServerMessageTime,
+        autoAttach,
       });
       break;
 
@@ -734,6 +736,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ success: true, url: SERVER_URL });
       });
       return true;
+
+    case 'set_auto_attach':
+      autoAttach = !!msg.enabled;
+      chrome.storage.sync.set({ autoAttach });
+      sendResponse({ success: true, autoAttach });
+      break;
   }
   return false;
 });
@@ -806,9 +814,14 @@ loadServerUrl();
 ensureKeepalive();
 connectWS();
 
-// Auto-attach to the active tab on startup
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  if (tabs && tabs[0] && tabs[0].id) {
-    attachToTab(tabs[0].id);
+// Load persisted autoAttach setting, then auto-attach if enabled
+chrome.storage.sync.get('autoAttach', (data) => {
+  if (data.autoAttach !== undefined) autoAttach = data.autoAttach;
+  if (autoAttach) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0] && tabs[0].id) {
+        attachToTab(tabs[0].id);
+      }
+    });
   }
 });
