@@ -430,6 +430,17 @@ TOOL_SCHEMAS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "browser_pdf",
+        "description": "Save the current page as a PDF document. Returns base64-encoded PDF data. Uses CDP Page.printToPDF with A4 paper size, background colors, and system fonts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "landscape": {"type": "boolean", "description": "Landscape orientation (default: false)", "default": False},
+                "scale": {"type": "number", "description": "Scale factor from 0.1 to 2.0 (default: 1.0)", "default": 1.0},
+            },
+        },
+    },
 ]
 
 
@@ -1135,6 +1146,31 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     f.write(base64.b64decode(data))
                 return "MEDIA:" + img_path + "\n" + "\n".join(lines)
             return "\n".join(lines)
+
+        elif name == "browser_pdf":
+            landscape = args.get("landscape", False)
+            scale = args.get("scale", 1.0)
+            params = {
+                "landscape": landscape,
+                "scale": scale,
+                "printBackground": True,
+                "preferCSSPageSize": True,
+                "paperWidth": 8.27,
+                "paperHeight": 11.69,
+            }
+            result = _cdp("Page.printToPDF", params)
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            data = result.get("result", {}).get("data", "")
+            if data:
+                import base64
+                pdf_bytes = base64.b64decode(data)
+                return json.dumps({
+                    "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
+                    "size": len(pdf_bytes),
+                    "mime": "application/pdf",
+                }, indent=2)
+            return "No PDF data returned"
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 

@@ -521,6 +521,17 @@ async def list_tools() -> list[Tool]:
                 "required": ["patterns"],
             },
         ),
+        Tool(
+            name="browser_pdf",
+            description="Save the current page as a PDF document. Returns base64-encoded PDF data. Uses CDP Page.printToPDF with A4 paper size, background colors, and system fonts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "landscape": {"type": "boolean", "description": "Landscape orientation (default: false)", "default": False},
+                    "scale": {"type": "number", "description": "Scale factor from 0.1 to 2.0 (default: 1.0)", "default": 1.0},
+                },
+            },
+        ),
     ]
 
     # Auto-inject tab_id into all tools for multi-tab targeting
@@ -1323,6 +1334,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             if len(lines) <= 2:
                 lines.append("  (no events yet — the capture server is running but may not have received anything)")
             return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "browser_pdf":
+            landscape = arguments.get("landscape", False)
+            scale = arguments.get("scale", 1.0)
+            params = {
+                "landscape": landscape,
+                "scale": scale,
+                "printBackground": True,
+                "preferCSSPageSize": True,
+                "paperWidth": 8.27,
+                "paperHeight": 11.69,
+            }
+            result = _cdp("Page.printToPDF", params)
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}")]
+            data = result.get("result", {}).get("data", "")
+            if data:
+                pdf_bytes = base64.b64decode(data)
+                return [TextContent(type="text", text=json.dumps({
+                    "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
+                    "size": len(pdf_bytes),
+                    "mime": "application/pdf",
+                }, indent=2))]
+            return [TextContent(type="text", text="No PDF data returned")]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
