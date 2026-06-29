@@ -304,7 +304,7 @@ async def handle_status(request):
     now = _now()
     uptime = now - server_start_time
     return web.json_response({
-        "version": "1.4.0",
+        "version": "1.5.0",
         "extension_connected": extension_ws is not None and not extension_ws.closed,
         "tab_id": tab_id,
         "extension_info": extension_info,
@@ -368,24 +368,32 @@ async def handle_events_sse(request):
 
 async def handle_recent(request):
     """Return recent events from in-memory capture buffer."""
-    # ?raw=true returns raw JSONL lines as text/plain
-    if request.query.get("raw") == "true":
-        limit = int(request.query.get("limit", 500))
-        limit = min(limit, 500)
-        mode = request.query.get("mode", "nav")
-        buf = _event_buffer if mode == "all" else _nav_buffer
-        events = list(buf)[-limit:] if limit > 0 else []
-        events.reverse()
-        lines = "\n".join(json.dumps(e, default=str) for e in events)
-        return web.Response(text=lines, content_type="text/plain")
-
     limit = int(request.query.get("limit", 20))
     limit = min(limit, 500)
     mode = request.query.get("mode", "nav")
+    event_type = request.query.get("type")  # Optional: filter by event type
+    since = request.query.get("since")  # Optional: filter by timestamp (ms)
 
     buf = _event_buffer if mode == "all" else _nav_buffer
-    events = list(buf)[-limit:] if limit > 0 else []
+    events = list(buf) if limit > 0 else []
     events.reverse()
+
+    # Apply filters
+    if event_type:
+        events = [e for e in events if e.get("type") == event_type]
+    if since:
+        try:
+            since_ts = float(since)
+            events = [e for e in events if (e.get("_received") or 0) >= since_ts]
+        except ValueError:
+            pass
+
+    events = events[:limit]
+
+    # ?raw=true returns raw JSONL lines as text/plain
+    if request.query.get("raw") == "true":
+        lines = "\n".join(json.dumps(e, default=str) for e in events)
+        return web.Response(text=lines, content_type="text/plain")
 
     return web.json_response({
         "count": len(events),
@@ -696,7 +704,7 @@ async def main():
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v1.4.0           ║")
+    print("  ║     CDP Relay Server v1.5.0           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
     print(f"  Extension WS: ws://{args.host}:{args.port}/ws")

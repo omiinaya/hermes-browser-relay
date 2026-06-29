@@ -2,13 +2,27 @@
 
 ---
 
-## Status: 12 implemented, scanning for more 🔄
+## Status: 15 implemented, scanning for more 🔄
 
-All 12 items completed (11 from initial backlog + 1 new). See Recently Completed below.
+All 15 items completed (11 from initial backlog + 4 new). See Recently Completed below.
 
 ---
 
 ## Recently Completed
+
+### P15 — browser_set_cookie, browser_network_requests, browser_response_body, browser_wait_for_navigation ✅
+**v1.5.0** — 4 new tools that surface previously captured data and enable new workflows:
+- `browser_wait_for_navigation` — polls relay event buffer until a fresh tab.navigated event appears
+- `browser_network_requests` — queries captured webRequest events with `?type=webrequest` and event filter
+- `browser_response_body` — queries captured response bodies (JSON/PDF patterns)
+- `browser_set_cookie` — injects cookies via CDP `Network.setCookie` (name, value, domain, path, secure, httpOnly, sameSite)
+- Relay `/recent` enhanced with `?type=` and `?since=` query filters
+
+### P14 — Popup tab selector + auto-attach toggle ✅
+Rewrite of extension popup with per-tab attach/detach buttons, connection status indicators, auto-attach toggle, and server URL config. Background.js now persists `autoAttach` in chrome.storage, starts auto-attach after storage load.
+
+### P13 — tab_id auto-injection + browser_find ✅
+Programmatic `tab_id` injection into all 39 tool schemas via post-processing loop in `list_tools()`. `browser_find` searches page text and returns matching element info.
 
 ### P12 — browser_pdf ✅
 Save the current page as a PDF document using CDP `Page.printToPDF`. Supports landscape orientation and scale factor. Returns base64-encoded PDF data. Added tool to MCP server and plugin.
