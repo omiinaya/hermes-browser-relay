@@ -4,13 +4,6 @@
 
 ## Status: PENDING
 
-### P3 — ✅ browser_console
-Read browser console output (console.log/warn/error messages) via CDP `Runtime.consoleAPICalled`. These events are already flowing through the capture server but there's no way to query them.
-Files: mcp-server/server.py, plugins/browser-relay/__init__.py
-Difficulty: Medium
-Est: 15 min
-*Implemented: Added browser_console tool to mcp-server/server.py and plugins/browser-relay/__init__.py. Sends Runtime.enable to ensure console domain, queries /recent?mode=all for Runtime.consoleAPICalled events, parses argument types (string/number/boolean/object/undefined), and returns formatted output with level icons.*
-
 ### P4 — Annotated screenshot with Pillow overlay
 Draw `[1]`, `[2]` labels directly onto the PNG screenshot using Pillow, instead of returning them as text next to the image. Would make annotated screenshots instantly visually useful.
 Files: mcp-server/server.py, plugins/browser-relay/__init__.py
@@ -62,6 +55,10 @@ Est: 45 min
 ---
 
 ## Recently Completed
+
+### P3 — browser_console
+Read browser console output (console.log/warn/error messages) via CDP `Runtime.consoleAPICalled`. These events are already flowing through the capture server but there's no way to query them.
+*Implemented: Added browser_console tool to mcp-server/server.py and plugins/browser-relay/__init__.py. Sends Runtime.enable to ensure console domain, queries /recent?mode=all for Runtime.consoleAPICalled events, parses argument types (string/number/boolean/object/undefined), and returns formatted output with level icons.*
 
 ### P2 — browser_select_option
 Select an `<option>` in a `<select>` dropdown by visible text. Currently requires `browser_eval(\"...\")` to set each dropdown.
