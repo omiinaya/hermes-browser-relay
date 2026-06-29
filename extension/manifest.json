@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CDP Bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Bridges Chrome DevTools Protocol to Hermes Agent via WebSocket — navigate, inspect, scrape with full network visibility",
   "permissions": [
     "debugger",
@@ -10,7 +10,8 @@
     "downloads",
     "tabs",
     "storage",
-    "alarms"
+    "alarms",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"

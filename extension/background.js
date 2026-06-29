@@ -138,6 +138,66 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   }
 });
 
+// ====== URL Blocking via declarativeNetRequest ======
+
+let blockedPatterns = [];
+let _nextRuleId = 1000;
+
+async function updateBlockingRules(patterns) {
+  blockedPatterns = patterns || [];
+
+  // Remove all existing dynamic rules
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  const existingIds = existing.map(r => r.id);
+
+  // Build new rules
+  const newRules = [];
+  for (let i = 0; i < blockedPatterns.length; i++) {
+    const p = blockedPatterns[i];
+    let urlFilter = p;
+
+    // Convert common glob patterns to DNR urlFilter
+    if (p.startsWith('*.')) {
+      // *.css → ends with ".css"
+      urlFilter = p.slice(1); // ".css"
+    } else if (p.startsWith('*')) {
+      // *analytics* → contains "analytics"
+      urlFilter = p.replace(/\*/g, '');
+    } else if (p.endsWith('*')) {
+      // https://example.com/* → starts with "https://example.com/"
+      urlFilter = p.slice(0, -1);
+    }
+
+    newRules.push({
+      id: 1000 + i,
+      priority: 1,
+      action: { type: "block" },
+      condition: {
+        urlFilter: urlFilter,
+        resourceTypes: [
+          "main_frame", "sub_frame", "stylesheet", "script",
+          "image", "font", "object", "xmlhttprequest", "ping",
+          "csp_report", "media", "websocket", "webtransport",
+          "webbundle", "other"
+        ],
+      },
+    });
+  }
+
+  await chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: existingIds,
+    addRules: newRules,
+  });
+}
+
+async function getBlockingRules() {
+  const rules = await chrome.declarativeNetRequest.getDynamicRules();
+  return rules.map(r => ({
+    id: r.id,
+    urlFilter: r.condition.urlFilter,
+  }));
+}
+
 // ====== Global Web Request Capture (all tabs) ======
 
 function sendWebRequest(type, details) {
@@ -408,6 +468,23 @@ function handleServerMessage(msg) {
   // Handle tab list / switch commands
   if (msg.tabCommand) {
     handleTabCommand(msg);
+    return;
+  }
+
+  // Handle block-patterns commands
+  if (msg.blockCommand === 'set') {
+    (async () => {
+      blockedPatterns = msg.patterns || [];
+      await updateBlockingRules(blockedPatterns);
+      safeSend({ id: msg.id, type: 'block-patterns', success: true, count: blockedPatterns.length });
+    })();
+    return;
+  }
+  if (msg.blockCommand === 'get') {
+    (async () => {
+      const rules = await getBlockingRules();
+      safeSend({ id: msg.id, type: 'block-patterns', patterns: blockedPatterns, rules: rules });
+    })();
     return;
   }
 

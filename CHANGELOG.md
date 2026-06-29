@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0 (2026-06-29)
+
+### Added
+- `browser_list_tabs` / `browser_switch_tab` — list all open tabs and switch by ID or keyword
+- `browser_get_cookies` / `browser_clear_cookies` — read and clear cookies via CDP
+- `browser_get_downloads` — query download events from capture buffer
+- `browser_block_patterns` — block URL patterns via Chrome's declarativeNetRequest API
+- MCP Connection watchdog — background thread auto-detects relay reconnections
+- Relay endpoints: `GET /tabs`, `POST /tabs/switch`, `POST /block/patterns`, `GET /block/patterns`
+- Extension: `tab-list`/`tab-switch` message types for tab management
+- Extension: `declarativeNetRequest`-based URL blocking with `set_blocked_patterns` command
+
+### Changed
+- `browser_status` now includes watchdog connection state
+- Extension updated to MV3-compatible declarativeNetRequest for request blocking
+
 ## v1.3.0 (2026-06-28)
 
 ### Added
