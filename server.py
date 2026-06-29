@@ -24,6 +24,7 @@ import json
 import logging
 import signal
 import time
+from collections import deque
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -40,6 +41,17 @@ log = logging.getLogger("cdp-relay")
 HEARTBEAT_INTERVAL = 15       # Send ping every 15s
 HEARTBEAT_TIMEOUT = 45        # Consider disconnected after 45s of silence
 STALE_REQUEST_TIMEOUT = 120   # Auto-cancel pending requests older than 120s
+
+# Event capture
+CAPTURE_DIR = Path("/tmp/hermes-captures")
+CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
+EVENT_BUFFER_SIZE = 1000
+NAV_BUFFER_SIZE = 200
+_event_buffer = deque(maxlen=EVENT_BUFFER_SIZE)
+_nav_buffer = deque(maxlen=NAV_BUFFER_SIZE)
+
+INTERESTING_WEBREQUEST_EVENTS = frozenset({"completed", "error"})
+INTERESTING_CDP_EVENTS = frozenset({"Network.responseReceived"})
 
 # State
 extension_ws = None
@@ -106,6 +118,25 @@ async def stale_request_sweep():
                 log.warning(f"Swept stale pending request {cdp_id} ({STALE_REQUEST_TIMEOUT}s)")
 
 
+def _capture_event(data: dict) -> None:
+    """Write event to capture file and in-memory buffer."""
+    if "ts" not in data:
+        data["_received"] = time.time() * 1000
+    # Write to file
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CAPTURE_FILE, "a") as f:
+        f.write(json.dumps(data, default=str) + "\n")
+    # Push to buffers
+    _event_buffer.append(data)
+    msg_type = data.get("type", "")
+    if msg_type in ("tab", "download", "response_body"):
+        _nav_buffer.append(data)
+    elif msg_type == "webrequest" and data.get("event") in INTERESTING_WEBREQUEST_EVENTS:
+        _nav_buffer.append(data)
+    elif msg_type == "event" and data.get("method") in INTERESTING_CDP_EVENTS:
+        _nav_buffer.append(data)
+
+
 async def handle_extension(request):
     """WebSocket handler for Chrome extension connection."""
     global extension_ws, extension_info, tab_id, last_message_time
@@ -146,6 +177,7 @@ async def handle_extension(request):
                 if msg_type == "event":
                     method = data.get("method", "")
                     log.debug(f"CDP event: {method}")
+                    _capture_event(data)
                     # Forward to event subscribers with isolation
                     for cb in list(event_subscribers):
                         try:
@@ -158,11 +190,30 @@ async def handle_extension(request):
                     url = data.get("url", "")
                     evt = data.get("event", "")
                     log.debug(f"WebRequest {evt}: {url[:100]}")
+                    _capture_event(data)
                     for cb in list(event_subscribers):
                         try:
                             cb(data)
                         except Exception:
                             log.exception("Event subscriber error")
+                    continue
+
+                if msg_type in ("download", "tab"):
+                    _capture_event(data)
+                    for cb in list(event_subscribers):
+                        try:
+                            cb(data)
+                        except Exception:
+                            log.exception("Event subscriber error")
+                    continue
+
+                if msg_type == "body":
+                    _capture_event(data)
+                    continue
+
+                if msg_type == "batch":
+                    for evt in data.get("events", []):
+                        _capture_event(evt)
                     continue
 
                 if msg_id and msg_id in pending_requests:
@@ -315,9 +366,48 @@ async def handle_events_sse(request):
     return response
 
 
+async def handle_recent(request):
+    """Return recent events from in-memory capture buffer."""
+    # ?raw=true returns raw JSONL lines as text/plain
+    if request.query.get("raw") == "true":
+        limit = int(request.query.get("limit", 500))
+        limit = min(limit, 500)
+        mode = request.query.get("mode", "nav")
+        buf = _event_buffer if mode == "all" else _nav_buffer
+        events = list(buf)[-limit:] if limit > 0 else []
+        events.reverse()
+        lines = "\n".join(json.dumps(e, default=str) for e in events)
+        return web.Response(text=lines, content_type="text/plain")
+
+    limit = int(request.query.get("limit", 20))
+    limit = min(limit, 500)
+    mode = request.query.get("mode", "nav")
+
+    buf = _event_buffer if mode == "all" else _nav_buffer
+    events = list(buf)[-limit:] if limit > 0 else []
+    events.reverse()
+
+    return web.json_response({
+        "count": len(events),
+        "buffer_fill": len(buf),
+        "events": events,
+    })
+
+
 async def shutdown():
-    """Clean shutdown — close WS, cancel pending, stop background tasks."""
+    """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
+
+    # Dump in-memory event buffer to JSONL file before shutdown
+    if _event_buffer:
+        try:
+            CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(CAPTURE_FILE, "a") as f:
+                for evt in _event_buffer:
+                    f.write(json.dumps(evt, default=str) + "\n")
+            log.info(f"Dumped {len(_event_buffer)} buffered events to {CAPTURE_FILE}")
+        except Exception:
+            log.exception("Failed to dump event buffer on shutdown")
 
     if _heartbeat_task and not _heartbeat_task.done():
         _heartbeat_task.cancel()
@@ -357,6 +447,8 @@ async def main():
     app.router.add_post("/cdp", handle_cdp_post)
     app.router.add_get("/ws", handle_extension)
     app.router.add_get("/events", handle_events_sse)
+    app.router.add_get("/recent", handle_recent)
+    app.router.add_get("/stats", handle_status)
 
     print()
     print("  ╔═══════════════════════════════════════╗")
@@ -367,6 +459,7 @@ async def main():
     print(f"  CDP API:      http://{args.host}:{args.port}/cdp")
     print(f"  Status:       http://{args.host}:{args.port}/status")
     print(f"  Events (SSE): http://{args.host}:{args.port}/events")
+    print(f"  Recent:       http://{args.host}:{args.port}/recent?limit=20&mode=nav")
     print()
     print("  Install extension → chrome://extensions/ → Load unpacked")
     print(f"  → {Path(__file__).parent / 'extension'}")
