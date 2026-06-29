@@ -45,6 +45,14 @@ CDP_SERVER = os.environ.get("CDP_RELAY_URL", "http://127.0.0.1:9223")
 CAPTURE_SERVER = os.environ.get("CAPTURE_SERVER_URL", "")  # Legacy, kept for compat
 CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
 
+# Tab targeting — set before CDP calls to route to a specific tab attachment
+_shared_tab_id: int | None = None
+
+def _set_tab(arguments: dict | None) -> None:
+    """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
+    global _shared_tab_id
+    _shared_tab_id = arguments.get("tab_id") if arguments else None
+
 # Shared HTTP connection for keep-alive
 _cdp_opener = urllib.request.build_opener()
 _cdp_opener.addheaders = [("Content-Type", "application/json")]
@@ -55,10 +63,12 @@ _capture_opener = urllib.request.build_opener()
 
 def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, tab_id: int | None = None) -> dict:
     """Send a CDP command to the relay server. Uses shared connection for keep-alive.
-    If tab_id is provided, routes to that specific tab attachment."""
+    If tab_id is provided, routes to that specific tab attachment.
+    Falls back to _shared_tab_id if set via _set_tab()."""
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
-    if tab_id is not None:
-        body_dict["tabId"] = tab_id
+    effective_tab_id = tab_id if tab_id is not None else _shared_tab_id
+    if effective_tab_id is not None:
+        body_dict["tabId"] = effective_tab_id
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:
@@ -164,7 +174,7 @@ app = Server("browser-relay")
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    tools = [
         Tool(
             name="browser_navigate",
             description="Navigate the browser to a URL. Returns after navigation starts.",
@@ -484,6 +494,19 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="browser_find",
+            description="Search the page for elements matching text or selector. Returns matching elements with coordinates, tag, text content, and ref IDs for clicking. Useful for finding elements without knowing their exact CSS selector.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text to search for (case-insensitive partial match on element text content)"},
+                    "selector": {"type": "string", "description": "Optional CSS selector to narrow search scope (e.g. 'div.content', '#main')"},
+                    "max_results": {"type": "integer", "description": "Maximum results (default: 20, max: 50)", "default": 20},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
             name="browser_block_patterns",
             description="Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API (MV3). Pass patterns=[\"*.css\",\"*.jpg\",\"*analytics*\"] to block, or patterns=[] to clear all blocks. Supports glob-style: *.css, *analytics*, https://example.com/*",
             inputSchema={
@@ -500,10 +523,20 @@ async def list_tools() -> list[Tool]:
         ),
     ]
 
+    # Auto-inject tab_id into all tools for multi-tab targeting
+    TAB_ID_PROP = {"tab_id": {"type": "integer", "description": "Optional: target a specific tab attachment by ID (from browser_list_attachments)"}}
+    for tool in tools:
+        props = tool.inputSchema.setdefault("properties", {})
+        if "tab_id" not in props:
+            props["tab_id"] = TAB_ID_PROP["tab_id"]
+
+    return tools
+
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageContent]:
     try:
+        _set_tab(arguments)
         if name == "browser_navigate":
             url = arguments["url"]
             result = _cdp("Page.navigate", {"url": url})
@@ -1195,6 +1228,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_get_title":
             title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
             return [TextContent(type="text", text=f"📄 {title}")]
+
+        elif name == "browser_find":
+            query = arguments["query"]
+            css_selector = arguments.get("selector", "")
+            max_results = min(arguments.get("max_results", 20), 50)
+            find_js = f"""
+            (() => {{
+                const query = {_js_quote(query)}.toLowerCase();
+                const scope = {_js_quote(css_selector)};
+                const maxR = {max_results};
+                const root = scope ? document.querySelector(scope) : document.body;
+                if (!root) return {{ error: 'Scope selector not found: ' + scope }};
+                const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
+                const all = root.querySelectorAll(selectors.join(','));
+                const seen = new Set();
+                const results = [];
+                let idx = 0;
+                all.forEach(el => {{
+                    if (seen.has(el)) return;
+                    seen.add(el);
+                    const txt = (el.textContent||'').trim().toLowerCase();
+                    if (!txt.includes(query)) return;
+                    if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+                    idx++;
+                    const r = el.getBoundingClientRect();
+                    results.push({{
+                        ref: 'e' + idx,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.textContent||'').trim().substring(0, 100),
+                        x: Math.round(r.x + r.width/2),
+                        y: Math.round(r.y + r.height/2),
+                        w: Math.round(r.width),
+                        h: Math.round(r.height),
+                        visible: r.top < window.innerHeight && r.bottom > 0,
+                    }});
+                }});
+                return {{ count: results.length, results: results.slice(0, maxR) }};
+            }})()
+            """
+            find_result = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True, "awaitPromise": True}))
+            if isinstance(find_result, dict) and "error" in find_result:
+                return [TextContent(type="text", text=f"Find error: {find_result['error']}")]
+            count = find_result.get("count", 0)
+            items = find_result.get("results", [])
+            if count == 0:
+                return [TextContent(type="text", text=f"No elements found matching '{query}'")]
+            lines = [f"🔍 {count} element(s) matching '{query}':", ""]
+            for it in items:
+                vis = "" if it["visible"] else "⬆"
+                lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{it['text'][:70]}\" @({it['x']},{it['y']})")
+            return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "browser_block_patterns":
             patterns = arguments.get("patterns", [])
