@@ -2,49 +2,46 @@
 
 A Chrome DevTools Protocol relay server that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 1.3.0** — Features snapshot/scroll/wait/fill tools, heartbeat keepalive, exponential backoff reconnect, tab-switch auto-reattach, stale request sweep, and graceful shutdown.
+**Version 1.4.0** — 33 tools across MCP server + Hermes plugin. Multi-tab attach support, URL blocking via declarativeNetRequest, MCP watchdog, tab manager, cookie management, downloads query, find, refresh/forward/get_title, and more.
 
 ## Architecture
 
 ```
-┌──────────────┐   POST /cdp    ┌──────────────┐   WebSocket    ┌──────────────┐   CDP    ┌────────┐
-│              │ ─────────────> │              │ ─────────────> │              │ ───────> │        │
-│  Hermes      │                │  Relay       │                │  Extension   │          │ Chrome │
-│  Agent       │ <───────────── │  Server      │ <───────────── │  (Service    │ <─────── │  Tab   │
-│              │   HTTP resp    │  :9223       │   WS resp      │   Worker)    │   CDP    │        │
-└──────────────┘   + /recent    └──────┬───────┘                └──────────────┘          └────────┘
-               curl /cdp         │
-                                  │ in-memory buffer
-                                  │ /tmp/hermes-captures/capture.jsonl
-                                  │
-                          ┌──────┴──────┐
-                          │  Event       │
-                          │  Capture     │
-                          │  (built-in)  │
-                          └─────────────┘
+┌──────────────┐   POST /cdp    ┌──────────────┐   WebSocket    ┌──────────────┐   CDP    ┌────────────────┐
+│              │ ─────────────> │              │ ─────────────> │              │ ───────> │                │
+│  Hermes      │                │  Relay       │                │  Extension   │          │  Chrome Tabs   │
+│  Agent       │ <───────────── │  Server      │ <───────────── │  (Service    │ <─────── │  (Multi-Attach)│
+│  / MCP       │   HTTP resp    │  :9223       │   WS resp      │   Worker)    │   CDP    │                │
+│  / Plugin    │   + /recent    └──────┬───────┘                └──────────────┘          └────────────────┘
+│              │   + /tabs      │
+│              │   + /block     │ in-memory buffer + MCP watchdog (15s health check)
+│              │   + /cdp/{id}  │ /tmp/hermes-captures/capture.jsonl
 ```
 
-**CDP Relay** (`server.py`, port `:9223`) — sends CDP commands to Chrome, responds via HTTP, and captures browser events (web requests, downloads, navigation, CDP events) to an in-memory buffer + JSONL file.
-- **`GET /recent?limit=20&mode=nav`** — returns recent captured events from the in-memory buffer
-- **`GET /recent?raw=true`** — returns raw JSONL format for Unix pipe chaining
-- **`GET /events`** — SSE streaming endpoint for real-time event monitoring
-- **`GET /stats`** — server status
+**CDP Relay** (`server.py`, port `:9223`) — sends CDP commands to Chrome tabs (single or multi-tab), responds via HTTP, and captures browser events.
+- **`GET /recent?limit=20&mode=nav`** — recent captured events (navigations, downloads, requests)
+- **`GET /tabs`** — list all open browser tabs
+- **`POST /tabs/switch`** — switch active attachment to a tab
+- **`POST /tabs/attach`** — add a tab attachment (multi-tab)
+- **`POST /tabs/detach`** — remove a tab attachment
+- **`GET /tabs/attachments`** — list currently attached tab IDs
+- **`POST /block/patterns`** — set URL blocking patterns (declarativeNetRequest)
+- **`GET /block/patterns`** — get current blocking patterns
+- **`POST /cdp/{tabId}`** — send CDP command to a specific tab
+- **`GET /events`** — SSE streaming for real-time event monitoring
+- **`GET /status` / `GET /stats`** — server status
 
-**Capture Server** (`capture_server.py`, port `:9988`) — legacy standalone logging server (optional, captured events are also available via the relay server)
+## What's New in v1.4.0
 
-## What's New in v1.3.0
-
-- ✅ **7 new MCP tools** — `browser_snapshot`, `browser_scroll`, `browser_wait_selector`, `browser_click_text`, `browser_fill_by_label`, `browser_get_text`, `browser_screenshot_annotated`
-- ✅ **Page snapshot** — interactive element map with ref IDs and coordinates (like Hermes native `browser_snapshot`)
-- ✅ **Click by text** — find and click elements by visible text content, no CSS selector needed
-- ✅ **Form fill by label** — find fields by label text, placeholder, or aria-label; uses `execCommand('insertText')` for React compatibility
-- ✅ **Wait for element** — poll until CSS selector appears (visible or attached), configurable timeout
-- ✅ **Scroll tool** — scroll by direction/amount without JS expressions
-- ✅ **Annotated screenshot** — screenshot + numbered element overlay
-- ✅ **Get page text** — return rendered page content in one call (10x faster than vision)
-- ✅ **Unified event capture** — `/recent` endpoint on relay server with in-memory buffer
-- ✅ **SIGTERM buffer dump** — in-memory events written to JSONL on graceful shutdown
-- ✅ **`?raw=true` on `/recent`** — raw JSONL output for Unix pipe chaining
+- ✅ **Multi-tab attach support** — attach debugger to multiple tabs simultaneously
+- ✅ **Tab management** — `browser_list_tabs`, `browser_switch_tab`, `browser_attach_tab`, `browser_detach_tab`, `browser_list_attachments`
+- ✅ **URL blocking** — `browser_block_patterns` via declarativeNetRequest (`*.css`, `*analytics*`, `/path/*`)
+- ✅ **Cookie tools** — `browser_get_cookies`, `browser_clear_cookies` (name, value, domain, expiry, httpOnly, secure)
+- ✅ **Downloads** — `browser_get_downloads` — query capture buffer for download events
+- ✅ **Page tools** — `browser_refresh`, `browser_forward`, `browser_get_title`, `browser_find`
+- ✅ **MCP watchdog** — background daemon thread, 15s health check, auto-reconnect detection
+- ✅ **Tab-targeted CDP** — all tools accept optional `tab_id` parameter for multi-tab routing
+- ✅ **`tab_id` on all tools** — every browser tool can target a specific tab attachment
 
 ## Quick Start
 
@@ -107,16 +104,17 @@ python3 cdp.py --server http://192.168.1.100:9223 status
 ## Extension Features
 
 ### Badge Status
-- **CDP** (green) — connected + debugger attached to a tab
+- **Number** (green) — connected + N tabs attached (e.g., `3` = 3 tabs)
 - **WS** (blue) — connected but no tab attached
 - **...** (yellow) — connecting
 - empty (gray) — disconnected
 
 ### Auto Features
 - **Auto-connect** — extension connects to the server on load
-- **Auto-attach** — debugger attaches to the active tab on startup
+- **Auto-attach** — debugger attaches to newly activated tabs (additive)
+- **Multi-tab** — maintains debugger connections to multiple tabs simultaneously
 - **Auto-reconnect** — exponential backoff (1s–60s) on disconnect
-- **Auto-reattach** — follows you when you switch browser tabs
+- **Auto-reattach** — reattaches to active tab if all tabs get detached
 - **Heartbeat** — bidirectional ping/pong keeps the connection alive
 
 ### Configuration

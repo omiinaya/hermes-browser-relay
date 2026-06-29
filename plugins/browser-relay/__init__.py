@@ -26,6 +26,14 @@ except ImportError:
 CDP_SERVER = "http://127.0.0.1:9223"
 TOOL_TIMEOUT = 60
 
+# Tab targeting — set before CDP calls to route to a specific tab attachment
+_shared_tab_id: int | None = None
+
+def _set_tab(arguments: dict | None) -> None:
+    """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
+    global _shared_tab_id
+    _shared_tab_id = arguments.get("tab_id") if arguments else None
+
 # ---------------------------------------------------------------------------
 # CDP Relay Client
 # ---------------------------------------------------------------------------
@@ -37,8 +45,12 @@ _cdp_opener.addheaders = [("Content-Type", "application/json")]
 
 
 def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT) -> dict:
-    """Send a CDP command to the relay server. Uses shared connection for keep-alive."""
-    body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
+    """Send a CDP command to the relay server. Uses shared connection for keep-alive.
+    Routes to _shared_tab_id if set via _set_tab()."""
+    body_dict = {"method": method, "params": params or {}, "timeout": timeout}
+    if _shared_tab_id is not None:
+        body_dict["tabId"] = _shared_tab_id
+    body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:
         with _cdp_opener.open(req, timeout=timeout + 5) as resp:
@@ -405,6 +417,19 @@ TOOL_SCHEMAS = [
             "properties": {},
         },
     },
+    {
+        "name": "browser_find",
+        "description": "Search the page for elements matching text. Returns elements with coordinates, tag, text, ref IDs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text to search for (case-insensitive, partial match)"},
+                "selector": {"type": "string", "description": "Optional CSS selector to narrow search scope"},
+                "max_results": {"type": "integer", "description": "Maximum results (default: 20)", "default": 20},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -436,10 +461,20 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         pass
 
     def get_tool_schemas(self) -> list[dict]:
-        return TOOL_SCHEMAS
+        # Inject tab_id into all tools for multi-tab targeting
+        TAB_ID_PARAM = {"tab_id": {"type": "integer", "description": "Optional: target a specific tab attachment by ID (from browser_list_attachments)"}}
+        schemas = []
+        for s in TOOL_SCHEMAS:
+            params = s.get("parameters", {})
+            props = params.setdefault("properties", {})
+            if "tab_id" not in props:
+                props["tab_id"] = TAB_ID_PARAM["tab_id"]
+            schemas.append(s)
+        return schemas
 
     def handle_tool_call(self, name: str, args: dict) -> str:
         try:
+            _set_tab(args)
             return self._dispatch(name, args)
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -978,6 +1013,48 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_get_title":
             title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
             return f"📄 {title}"
+
+        elif name == "browser_find":
+            query = args["query"]
+            css_selector = args.get("selector", "")
+            max_results = min(args.get("max_results", 20), 50)
+            find_js = f"""
+            (() => {{
+                const query = {json.dumps(query)}.toLowerCase();
+                const scope = {json.dumps(css_selector)};
+                const maxR = {max_results};
+                const root = scope ? document.querySelector(scope) : document.body;
+                if (!root) return {{ error: 'Scope not found' }};
+                const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
+                const all = root.querySelectorAll(selectors.join(','));
+                const seen = new Set();
+                const results = [];
+                let idx = 0;
+                all.forEach(el => {{
+                    if (seen.has(el)) return;
+                    seen.add(el);
+                    const txt = (el.textContent||'').trim().toLowerCase();
+                    if (!txt.includes(query)) return;
+                    if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+                    idx++;
+                    const r = el.getBoundingClientRect();
+                    results.push({{ ref: 'e'+idx, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0,100), x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
+                }});
+                return {{ count: results.length, results: results.slice(0, maxR) }};
+            }})()
+            """
+            find_result = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True, "awaitPromise": True}))
+            if isinstance(find_result, dict) and "error" in find_result:
+                return json.dumps({"error": find_result["error"]})
+            count = find_result.get("count", 0)
+            items = find_result.get("results", [])
+            if count == 0:
+                return f"No elements found matching '{query}'"
+            lines = [f"🔍 {count} element(s) matching '{query}':", ""]
+            for it in items:
+                vis = "" if it["visible"] else "⬆"
+                lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{it['text'][:70]}\" @({it['x']},{it['y']})")
+            return "\n".join(lines)
 
         elif name == "browser_block_patterns":
             patterns = args.get("patterns", [])
