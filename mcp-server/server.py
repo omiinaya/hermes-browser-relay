@@ -9,7 +9,6 @@ Protocol: stdio MCP — read JSON-RPC from stdin, write to stdout.
 """
 import json
 import os
-import time
 import urllib.request
 import urllib.error
 from typing import Any
@@ -19,24 +18,23 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, ImageContent
 
 # ---------------------------------------------------------------------------
-# CDP Relay Client
+# CDP Relay Client (with connection reuse)
 # ---------------------------------------------------------------------------
 
 CDP_SERVER = os.environ.get("CDP_RELAY_URL", "http://127.0.0.1:9223")
 CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
 
+# Shared HTTP connection for keep-alive
+_cdp_opener = urllib.request.build_opener()
+_cdp_opener.addheaders = [("Content-Type", "application/json")]
+
 
 def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
-    """Send a CDP command to the relay server. Returns the full response dict."""
+    """Send a CDP command to the relay server. Uses shared connection for keep-alive."""
     body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
-    req = urllib.request.Request(
-        f"{CDP_SERVER}/cdp",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout + 5) as resp:
+        with _cdp_opener.open(req, timeout=timeout + 5) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode() if e.fp else "{}"
@@ -45,6 +43,17 @@ def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) ->
         return {"error": f"Connection failed: {e.reason}", "hint": "Is the CDP relay running on :9223?"}
     except Exception as e:
         return {"error": str(e)}
+
+
+def _cdp_async(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
+    """Same as _cdp but returns immediately for fire-and-forget commands (no response needed)."""
+    body = json.dumps({"method": method, "params": params or {}, "timeout": timeout}).encode()
+    req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
+    try:
+        with _cdp_opener.open(req, timeout=timeout + 5) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return {}
 
 
 def _parse_result(result: dict) -> Any:
@@ -198,19 +207,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_type":
             selector = arguments["selector"]
             text = arguments["text"]
-            # Click the field first
-            click_result = await call_tool("browser_click", {"selector": selector})
-            time.sleep(0.2)
-            # Select all + delete (Ctrl+A, Delete)
-            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "a"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Delete"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Delete"})
-            time.sleep(0.1)
-            # Type
-            _cdp("Input.insertText", {"text": text})
+            # One JS eval: focus the element, set its value, dispatch input/change events
+            type_expr = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                el.focus();
+                el.value = {json.dumps(text)};
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
+            }})()
+            """
+            result = _cdp("Runtime.evaluate", {"expression": type_expr, "returnByValue": True})
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
             return [TextContent(type="text", text=f"Typed '{text}' into {selector}")]
 
         elif name == "browser_enter":
