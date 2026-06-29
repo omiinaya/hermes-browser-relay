@@ -4,19 +4,6 @@
 
 ## Status: PENDING
 
-### ✅ P1 — browser_hover
-Hover the mouse over an element by CSS selector. Drives dropdown menus and tooltip triggers that activate on `mouseenter`.
-Files: mcp-server/server.py, plugins/browser-relay/__init__.py
-Difficulty: Easy
-Est: 5 min
-*Implemented: Added browser_hover tool definition + handler to mcp-server/server.py and plugins/browser-relay/__init__.py. Uses Input.dispatchMouseEvent with type 'mouseMoved' at element center coordinates.*
-
-### P2 — browser_select_option
-Select an `<option>` in a `<select>` dropdown by visible text. Currently requires `browser_eval("...")` to set each dropdown.
-Files: mcp-server/server.py, plugins/browser-relay/__init__.py
-Difficulty: Easy
-Est: 5 min
-
 ### P3 — browser_console
 Read browser console output (console.log/warn/error messages) via CDP `Runtime.consoleAPICalled`. These events are already flowing through the capture server but there's no way to query them.
 Files: mcp-server/server.py, plugins/browser-relay/__init__.py
@@ -75,4 +62,10 @@ Est: 45 min
 
 ## Recently Completed
 
-*(cron manages this section — moves items here when marked ✅, purges old ones)*
+### P2 — browser_select_option
+Select an `<option>` in a `<select>` dropdown by visible text. Currently requires `browser_eval(\"...\")` to set each dropdown.
+*Implemented: Added browser_select_option tool to mcp-server/server.py and plugins/browser-relay/__init__.py. Uses JS to find <select> by CSS selector, match option text case-insensitively, set .value, and dispatch change + input events.*
+
+### P1 — browser_hover
+Hover the mouse over an element by CSS selector.
+*Implemented: Added browser_hover tool definition + handler to mcp-server/server.py and plugins/browser-relay/__init__.py. Uses Input.dispatchMouseEvent with type 'mouseMoved' at element center coordinates.*
