@@ -1,0 +1,4 @@
+name: browser-relay
+version: 1.3.0
+description: "Browser control tools — navigate, eval, click, type, snapshot, scroll, wait, fill, screenshot via CDP relay (16 tools)"
+pip_dependencies: []
