@@ -519,6 +519,117 @@ async def handle_block_patterns_get(request):
         return web.json_response({"error": "Block patterns get timed out"}, status=504)
 
 
+async def handle_tabs_attach(request):
+    """HTTP endpoint: attach debugger to a specific tab (additive)."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    tab_id = body.get("tabId")
+    if tab_id is None:
+        return web.json_response({"error": "Missing 'tabId'"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "attach", "tabId": tab_id}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send attach command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Attach timed out"}, status=504)
+
+
+async def handle_tabs_detach(request):
+    """HTTP endpoint: detach debugger from a specific tab."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    tab_id = body.get("tabId")
+    if tab_id is None:
+        return web.json_response({"error": "Missing 'tabId'"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "detach", "tabId": tab_id}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send detach command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Detach timed out"}, status=504)
+
+
+async def handle_tabs_attachments(request):
+    """HTTP endpoint: list currently attached tab IDs."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "list-attachments"}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to list attachments"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=5)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "List attachments timed out"}, status=504)
+
+
+async def handle_cdp_post_tab(request):
+    """HTTP endpoint: send a CDP command to a specific tab.
+    POST /cdp/{tabId} with same JSON body as /cdp."""
+    tab_id_str = request.match_info.get("tabId")
+    try:
+        tab_id = int(tab_id_str)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid tabId"}, status=400)
+
+    try:
+        body = await request.json()
+    except (JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    body["tabId"] = tab_id
+    return await _process_cdp_command(body)
+
+
 async def shutdown():
     """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
@@ -578,6 +689,10 @@ async def main():
     app.router.add_post("/tabs/switch", handle_tabs_switch)
     app.router.add_post("/block/patterns", handle_block_patterns)
     app.router.add_get("/block/patterns", handle_block_patterns_get)
+    app.router.add_post("/tabs/attach", handle_tabs_attach)
+    app.router.add_post("/tabs/detach", handle_tabs_detach)
+    app.router.add_get("/tabs/attachments", handle_tabs_attachments)
+    app.router.add_post("/cdp/{tabId}", handle_cdp_post_tab)
 
     print()
     print("  ╔═══════════════════════════════════════╗")
