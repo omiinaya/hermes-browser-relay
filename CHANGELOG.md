@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.1 (2026-06-29)
+
+### Added
+- `browser_dismiss_dialog` — dismiss JavaScript alert/confirm/prompt dialogs via CDP `Page.handleJavaScriptDialog`. Accept, cancel, or provide prompt text
+- 39 tests (was 36) — 3 dialog-specific CDP endpoint tests
+
+---
+
 ## v1.5.0 (2026-06-29)
 
 ### Added

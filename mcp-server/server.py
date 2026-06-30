@@ -622,6 +622,18 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="browser_dismiss_dialog",
+            description="Dismiss a JavaScript dialog (alert/confirm/prompt) by accepting or cancelling it. JavaScript dialogs block all CDP commands until handled — use this tool when screenshots, navigation, or eval commands hang because a dialog is open on the page.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "accept": {"type": "boolean", "description": "True to accept/confirm, False to cancel/dismiss (default: true)"},
+                    "prompt_text": {"type": "string", "description": "Text to provide for prompt() dialogs (ignored for alert/confirm)"},
+                },
+                "required": [],
+            },
+        ),
+        Tool(
             name="browser_upload_file",
             description="Upload a file by setting the value of an <input type=file> element. Uses CDP DOM.setFileInputFiles to set the file path on the file input without requiring a file picker dialog. \n\nIMPORTANT: File paths must exist on the machine where Chrome is running (not the agent's machine).",
             inputSchema={
@@ -1682,6 +1694,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 "success": True,
                 "files": file_paths,
                 "selector": selector,
+            }, indent=2))]
+
+        elif name == "browser_dismiss_dialog":
+            accept = arguments.get("accept", True)
+            params = {"accept": accept}
+            if "prompt_text" in arguments:
+                params["promptText"] = arguments["prompt_text"]
+            result = _cdp("Page.handleJavaScriptDialog", params)
+            if "error" in result:
+                return [TextContent(type="text", text=f"Error dismissing dialog: {result['error']}")]
+            return [TextContent(type="text", text=json.dumps({
+                "accepted": accept,
+                "success": True,
             }, indent=2))]
 
         elif name == "browser_form_fill":
