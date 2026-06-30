@@ -44,6 +44,8 @@ def _build_app():
     app.router.add_post("/tabs/attach", relay.handle_tabs_attach)
     app.router.add_post("/tabs/detach", relay.handle_tabs_detach)
     app.router.add_get("/tabs/attachments", relay.handle_tabs_attachments)
+    app.router.add_post("/tabs/create", relay.handle_tabs_create)
+    app.router.add_post("/tabs/close", relay.handle_tabs_close)
     app.router.add_post("/cdp/{tabId}", relay.handle_cdp_post_tab)
     return app
 
@@ -285,6 +287,24 @@ class TestTabs:
         resp = await client.post("/tabs/attach", json={})
         assert resp.status in (400, 503)
 
+    @pytest.mark.asyncio
+    async def test_tabs_create_no_extension(self, client):
+        """POST /tabs/create returns 503 without extension."""
+        resp = await client.post("/tabs/create", json={"url": "https://example.com"})
+        assert resp.status in (503, 404)
+
+    @pytest.mark.asyncio
+    async def test_tabs_close_no_extension(self, client):
+        """POST /tabs/close returns 503 without extension."""
+        resp = await client.post("/tabs/close", json={"tabId": 123})
+        assert resp.status in (503, 404)
+
+    @pytest.mark.asyncio
+    async def test_tabs_close_missing_tabid(self, client):
+        """POST /tabs/close without tabId returns 503 (extension first) or 400."""
+        resp = await client.post("/tabs/close", json={})
+        assert resp.status in (400, 503)
+
 
 # ====== Block Patterns Tests ======
 
@@ -373,6 +393,7 @@ class TestHandlerStructure:
         "handle_tabs_list", "handle_tabs_switch", "handle_block_patterns",
         "handle_block_patterns_get", "handle_tabs_attach", "handle_tabs_detach",
         "handle_tabs_attachments", "handle_cdp_post_tab",
+        "handle_tabs_create", "handle_tabs_close",
     ]
 
     def test_all_handlers_exist(self):

@@ -2,41 +2,22 @@
 
 ---
 
-## Status: 18 implemented, scanning for more 🔄
+## Status: 20 implemented, 5 remaining 🔄
 
-All 18 items completed (11 from initial backlog + 7 new). See Recently Completed below.
+All 20 backlog items completed. 5 new gaps identified below.
 
 ---
 
 ## Recently Completed
 
-### P18 — browser_form_fill ✅
-Bulk fill multiple form fields from a dict. Smart dispatch: CSS-selector-looking keys (e.g. `input[name=email]`) go directly to `document.querySelector()`, text keys use shadow-aware label/placeholder/name matching. 50ms delay between fills.
+### P20 — Test suite (33 passing) ✅
+Full pytest test suite for relay server with 33 tests covering status, CDP endpoints, /recent with filters, tab endpoints, block patterns, event subscriber system, and capture buffer functionality. Uses aiohttp TestClient for real request/response cycles. Runner at `tests/run.sh`.
 
-### P17 — browser_upload_file ✅
-Upload files via CDP `DOM.setFileInputFiles`. Sets the file path on `<input type=file>` without requiring the browser file picker dialog. Validates the element is a file input first via JS, then uses CDP's DOM node ID to set files.
+### P19 — MCP watchdog auto-reconnect ✅
+Added `_wait_for_relay()` — blocks up to 5s polling `/status` every 300ms. `_cdp()` and `_query_capture()` retry once with wait on connection failure. Tools no longer immediately error when relay is restarting.
 
-### P16 — Shadow DOM support ✅
-`browser_click_text` and `browser_fill_by_label` now recursively traverse shadow DOM roots. Labels, inputs, buttons, and clickable elements inside Lit/Vue/Shoelace/web components are now findable. Added `[onclick]`, `[tabindex]`, `select` to click-target selectors.
-
-### P15 — browser_set_cookie, browser_network_requests, browser_response_body, browser_wait_for_navigation ✅
-**v1.5.0** — 4 new tools that surface previously captured data and enable new workflows:
-- `browser_wait_for_navigation` — polls relay event buffer until a fresh tab.navigated event appears
-- `browser_network_requests` — queries captured webRequest events with `?type=webrequest` and event filter
-- `browser_response_body` — queries captured response bodies (JSON/PDF patterns)
-- `browser_set_cookie` — injects cookies via CDP `Network.setCookie` (name, value, domain, path, secure, httpOnly, sameSite)
-- Relay `/recent` enhanced with `?type=` and `?since=` query filters
-
-### P14 — Popup tab selector + auto-attach toggle ✅
-Rewrite of extension popup with per-tab attach/detach buttons, connection status indicators, auto-attach toggle, and server URL config. Background.js now persists `autoAttach` in chrome.storage, starts auto-attach after storage load.
-
-### P13 — tab_id auto-injection + browser_find ✅
-Programmatic `tab_id` injection into all 41 tool schemas via post-processing loop in `list_tools()`. `browser_find` searches page text and returns matching element info.
-
-### P12 — browser_pdf ✅
-Save the current page as a PDF document using CDP `Page.printToPDF`. Supports landscape orientation and scale factor. Returns base64-encoded PDF data. Added tool to MCP server and plugin.
-
-*(P1–P11 from original backlog remain completed — see git history for details)*
+*(P12–P18 from v1.5.0 remain completed — see prior entries)*
+*(P1–P11 from original backlog remain completed — see git history)*
 
 ---
 
@@ -44,6 +25,8 @@ Save the current page as a PDF document using CDP `Page.printToPDF`. Supports la
 
 | Priority | Item | Impact | Notes |
 |----------|------|--------|-------|
-| P1 | **Test suite** | Regression safety across 41 tools × 4 layers | pytest + aiohttp test client for relay server |
-| P2 | **MCP watchdog auto-reconnect** | Tools don't hang when relay restarts | Currently just logs — should retry `_cdp()` when relay is down |
-| P3 | **Test CI runner** | Automated regression on push | `.github/workflows/test.yml` or shell script |
+| P1 | **GitHub CI workflow** | Tests exist but never auto-run — PRs can silently break | `.github/workflows/test.yml` |
+| P2 | **`browser_snapshot` shadow DOM** | Lit/Vue/Shoelace components invisible in accessibility tree — same gap we fixed in click_text/fill_by_label | Needs recursive shadow root traversal |
+| P3 | **`browser_wait_selector` shadow DOM** | Can't wait for elements inside web components | Same fix as snapshot |
+| P4 | **`browser_close_tab` + `browser_create_tab`** | Full tab lifecycle. Can navigate but can't close tabs or create blank ones | Extension needs `tabs.create` + `tabs.remove` message handlers |
+| P5 | **`browser_dismiss_dialog`** | No way to handle `alert()`/`confirm()`/`prompt()` dialogs — they block CDP commands silently | CDP `Page.handleJavaScriptDialog` |
