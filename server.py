@@ -638,6 +638,70 @@ async def handle_cdp_post_tab(request):
     return await _process_cdp_command(body)
 
 
+async def handle_tabs_create(request):
+    """HTTP endpoint: create a new tab. POST /tabs/create with {url, active}."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "create", "url": body.get("url", "about:blank"), "active": body.get("active", True)}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send create tab command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Create tab timed out"}, status=504)
+
+
+async def handle_tabs_close(request):
+    """HTTP endpoint: close a tab. POST /tabs/close with {tabId}."""
+    if not extension_ws or extension_ws.closed:
+        return web.json_response({"error": "Extension not connected"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    tab_id = body.get("tabId")
+    if tab_id is None:
+        return web.json_response({"error": "Missing 'tabId'"}, status=400)
+
+    cdp_id = int(time.time() * 1000000) % (2**31)
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[cdp_id] = {"future": future, "created_at": _now()}
+
+    cmd = {"id": cdp_id, "tabCommand": "close", "tabId": tab_id}
+    try:
+        await extension_ws.send_json(cmd)
+    except Exception:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Failed to send close tab command"}, status=502)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=10)
+        return web.json_response(result)
+    except asyncio.TimeoutError:
+        pending_requests.pop(cdp_id, None)
+        return web.json_response({"error": "Close tab timed out"}, status=504)
+
+
 async def shutdown():
     """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
@@ -701,6 +765,8 @@ async def main():
     app.router.add_post("/tabs/detach", handle_tabs_detach)
     app.router.add_get("/tabs/attachments", handle_tabs_attachments)
     app.router.add_post("/cdp/{tabId}", handle_cdp_post_tab)
+    app.router.add_post("/tabs/create", handle_tabs_create)
+    app.router.add_post("/tabs/close", handle_tabs_close)
 
     print()
     print("  ╔═══════════════════════════════════════╗")

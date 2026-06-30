@@ -445,6 +445,40 @@ function handleTabCommand(msg) {
     return true;
   }
 
+  if (command === 'create') {
+    const url = msg.url || 'about:blank';
+    const active = msg.active !== false;
+    chrome.tabs.create({ url, active }, (tab) => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        safeSend({ id, type: 'tab-create', success: false, error: lastError.message });
+        return;
+      }
+      safeSend({ id, type: 'tab-create', success: true, tabId: tab.id, title: tab.title || '', url: tab.url || '' });
+    });
+    return true;
+  }
+
+  if (command === 'close') {
+    const tabId = msg.tabId;
+    if (tabId == null) {
+      safeSend({ id, type: 'tab-close', success: false, error: 'No tabId' });
+      return true;
+    }
+    chrome.tabs.remove(tabId, () => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        safeSend({ id, type: 'tab-close', success: false, error: lastError.message });
+        return;
+      }
+      // Auto-clean attachments
+      attachments.delete(tabId);
+      updateBadge();
+      safeSend({ id, type: 'tab-close', success: true, tabId });
+    });
+    return true;
+  }
+
   return false;
 }
 
@@ -742,6 +776,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.storage.sync.set({ autoAttach });
       sendResponse({ success: true, autoAttach });
       break;
+
+    case 'create_tab':
+      chrome.tabs.create({ url: msg.url || 'about:blank', active: msg.active !== false }, (tab) => {
+        sendResponse({ success: true, tabId: tab.id, url: tab.url });
+      });
+      return true;
+
+    case 'close_tab':
+      if (!msg.tabId) {
+        sendResponse({ success: false, error: 'No tabId' });
+        break;
+      }
+      chrome.tabs.remove(msg.tabId, () => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          sendResponse({ success: false, error: lastError.message });
+          return;
+        }
+        attachments.delete(msg.tabId);
+        updateBadge();
+        sendResponse({ success: true });
+      });
+      return true;
   }
   return false;
 });

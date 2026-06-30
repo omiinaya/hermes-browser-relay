@@ -648,6 +648,28 @@ async def list_tools() -> list[Tool]:
                 "required": ["fields"],
             },
         ),
+        Tool(
+            name="browser_create_tab",
+            description="Create a new browser tab with an optional URL. Returns the new tab's ID, title, and URL. Uses chrome.tabs.create via the extension.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to open (default: about:blank)", "default": "about:blank"},
+                    "active": {"type": "boolean", "description": "Whether the tab should be active/focused (default: true)", "default": True},
+                },
+            },
+        ),
+        Tool(
+            name="browser_close_tab",
+            description="Close a browser tab by its tab ID. Uses chrome.tabs.remove via the extension. Also cleans up any CDP attachments for the closed tab.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "Tab ID to close (from browser_list_tabs)"},
+                },
+                "required": ["tab_id"],
+            },
+        ),
     ]
 
     # Auto-inject tab_id into all tools for multi-tab targeting
@@ -784,7 +806,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             snapshot_js = f"""
             (() => {{
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                const all = document.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const all = _shadowQueryAll(document, selectors.join(','));
                 const seen = new Set();
                 const items = [];
                 let idx = 0;
@@ -874,7 +904,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             while ttime.time() < deadline:
                 check_js = f"""
                 (() => {{
-                    const el = document.querySelector({_js_quote(selector)});
+                    // Shadow DOM-aware query — traverses light DOM + shadow roots recursively
+                    const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                    const el = _sq(document, {_js_quote(selector)})[0] || null;
                     if (!el) return false;
                     if ({'true' if state == 'visible' else 'false'}) {{
                         const r = el.getBoundingClientRect();
@@ -997,7 +1029,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             annotate_js = f"""
             (() => {{
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                const all = document.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const all = _shadowQueryAll(document, selectors.join(','));
                 const seen = new Set();
                 const items = [];
                 let idx = 0;
@@ -1386,7 +1426,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 const root = scope ? document.querySelector(scope) : document.body;
                 if (!root) return {{ error: 'Scope selector not found: ' + scope }};
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                const all = root.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll
+                const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                const all = _sq(root, selectors.join(','));
                 const seen = new Set();
                 const results = [];
                 let idx = 0;
@@ -1702,6 +1744,40 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                     results.append({"field": identifier, "set": True})
                 _tf_mod.sleep(0.05)  # small delay between fills
             return [TextContent(type="text", text=json.dumps({"results": results, "filled": sum(1 for r in results if r.get("set")), "failed": sum(1 for r in results if "error" in r)}, indent=2))]
+
+        elif name == "browser_create_tab":
+            url = arguments.get("url", "about:blank")
+            active = arguments.get("active", True)
+            cdp_id = int(time.time() * 1000000) % (2**31)
+            import time as _ct_tm
+            cmd = {"id": cdp_id, "tabCommand": "create", "url": url, "active": active}
+            try:
+                req = urllib.request.Request(
+                    f"{CDP_SERVER}/tabs/create",
+                    data=json.dumps({"url": url, "active": active}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with _cdp_opener.open(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
+
+        elif name == "browser_close_tab":
+            tab_id = arguments["tab_id"]
+            try:
+                req = urllib.request.Request(
+                    f"{CDP_SERVER}/tabs/close",
+                    data=json.dumps({"tabId": tab_id}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with _cdp_opener.open(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

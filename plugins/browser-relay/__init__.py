@@ -522,6 +522,28 @@ TOOL_SCHEMAS = [
             "required": ["fields"],
         },
     },
+    {
+        "name": "browser_create_tab",
+        "description": "Create a new browser tab with an optional URL. Returns the new tab's ID, title, and URL. Uses chrome.tabs.create via the extension.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to open (default: about:blank)", "default": "about:blank"},
+                "active": {"type": "boolean", "description": "Whether the tab should be active/focused (default: true)", "default": True},
+            },
+        },
+    },
+    {
+        "name": "browser_close_tab",
+        "description": "Close a browser tab by its tab ID. Uses chrome.tabs.remove via the extension. Also cleans up any CDP attachments for the closed tab.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to close (from browser_list_tabs)"},
+            },
+            "required": ["tab_id"],
+        },
+    },
 ]
 
 
@@ -681,7 +703,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             snapshot_js = f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const all = document.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const all = _shadowQueryAll(document, selectors.join(','));
                 const seen = new Set();
                 const items = [];
                 let idx = 0;
@@ -751,7 +781,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             import time as _t
             deadline = _t.time() + timeout
             while _t.time() < deadline:
-                check_js = f"(el = document.querySelector({json.dumps(selector)})) && ({'true' if state == 'visible' else 'true'} ? (r=el.getBoundingClientRect(), r.width>0&&r.height>0) : true)"
+                check_js = f"(s={json.dumps(selector)},(_sq=(r,sel)=>{{let z=[];try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}}if(r.shadowRoot)z=z.concat(_sq(r.shadowRoot,sel));for(const c of r.children||[])z=z.concat(_sq(c,sel));return z}})(document,s).find(el=>{{let r=el.getBoundingClientRect();return r.width>0&&r.height>0}}) ? true : false)"
                 if _parse_result(_cdp("Runtime.evaluate", {"expression": check_js, "returnByValue": True})):
                     return f"Selector '{selector}' matched"
                 import asyncio
@@ -1146,7 +1176,9 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 const root = scope ? document.querySelector(scope) : document.body;
                 if (!root) return {{ error: 'Scope not found' }};
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const all = root.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll
+                const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                const all = _sq(root, selectors.join(','));
                 const seen = new Set();
                 const results = [];
                 let idx = 0;
@@ -1222,7 +1254,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             annotate_js = f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const all = document.querySelectorAll(selectors.join(','));
+                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const all = _shadowQueryAll(document, selectors.join(','));
                 const seen = new Set();
                 const items = [];
                 let idx = 0;
@@ -1488,6 +1528,37 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     results.append({"field": identifier, "set": True})
                 _ff_mod.sleep(0.05)
             return json.dumps({"results": results, "filled": sum(1 for r in results if r.get("set")), "failed": sum(1 for r in results if "error" in r)}, indent=2)
+
+        elif name == "browser_create_tab":
+            url = args.get("url", "about:blank")
+            active = args.get("active", True)
+            try:
+                req = urllib.request.Request(
+                    f"{CDP_SERVER}/tabs/create",
+                    data=json.dumps({"url": url, "active": active}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                return json.dumps(result, indent=2)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif name == "browser_close_tab":
+            tab_id = args["tab_id"]
+            try:
+                req = urllib.request.Request(
+                    f"{CDP_SERVER}/tabs/close",
+                    data=json.dumps({"tabId": tab_id}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                return json.dumps(result, indent=2)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
