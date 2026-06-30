@@ -2,7 +2,7 @@
 
 A Chrome DevTools Protocol relay server that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 1.5.0** — 39 tools across MCP server + Hermes plugin. Popup tab selector, multi-tab attach support, PDF save, network request viewer, response body capture, cookie management, URL blocking via declarativeNetRequest, MCP watchdog, tab manager, find, set_cookie, and more.
+**Version 1.5.1** — 44 tools across MCP server + Hermes plugin. Popup tab selector, multi-tab attach support, PDF save, network request viewer, response body capture, cookie management, URL blocking via declarativeNetRequest, MCP watchdog, tab manager, find, set_cookie, dialog dismissal, and more.
 
 ## Architecture
 
@@ -31,8 +31,9 @@ A Chrome DevTools Protocol relay server that bridges remote browser control betw
 - **`GET /events`** — SSE streaming for real-time event monitoring
 - **`GET /status` / `GET /stats`** — server status
 
-## What's New in v1.5.0
+## What's New in v1.5.1
 
+- ✅ **Dialog dismissal** — `browser_dismiss_dialog` — dismiss JavaScript alert/confirm/prompt dialogs. Accept, cancel, or provide prompt text. Dialogs block all CDP commands until handled
 - ✅ **Popup tab selector** — attach/detach per-tab buttons, auto-attach toggle, connection status, server URL config
 - ✅ **Network query tools** — `browser_network_requests`, `browser_response_body` — query captured webRequest events and response bodies from relay buffer
 - ✅ **Navigation wait** — `browser_wait_for_navigation` — poll event buffer until page finishes loading (returns URL/title)

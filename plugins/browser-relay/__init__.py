@@ -496,8 +496,20 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "browser_dismiss_dialog",
+        "description": "Dismiss a JavaScript dialog (alert/confirm/prompt) by accepting or cancelling it. JavaScript dialogs block all CDP commands until handled — use this tool when screenshots, navigation, or eval commands hang because a dialog is open on the page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "accept": {"type": "boolean", "description": "True to accept/confirm, False to cancel/dismiss (default: true)"},
+                "prompt_text": {"type": "string", "description": "Text to provide for prompt() dialogs (ignored for alert/confirm)"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "browser_upload_file",
-        "description": "Upload a file by setting the value of an <input type=file> element. Uses CDP DOM.setFileInputFiles to set the file path on the file input without requiring a file picker dialog.\n\nIMPORTANT: File paths must exist on the machine where Chrome is running (not the agent's machine).",
+        "description": "Upload a file by setting the value of an <input type=file> element. Uses CDP DOM.setFileInputFiles to set the file path on the file input without requiring a file picker dialog. \n\nIMPORTANT: File paths must exist on the machine where Chrome is running (not the agent's machine).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1468,6 +1480,16 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             if "error" in files_result:
                 return f"Error setting files: {files_result['error']}"
             return json.dumps({"success": True, "files": file_paths}, indent=2)
+
+        elif name == "browser_dismiss_dialog":
+            accept = args.get("accept", True)
+            params = {"accept": accept}
+            if "prompt_text" in args:
+                params["promptText"] = args["prompt_text"]
+            result = _cdp("Page.handleJavaScriptDialog", params)
+            if "error" in result:
+                return f"Error dismissing dialog: {result['error']}"
+            return json.dumps({"accepted": accept, "success": True}, indent=2)
 
         elif name == "browser_form_fill":
             fields = args["fields"]

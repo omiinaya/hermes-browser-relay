@@ -157,6 +157,37 @@ class TestCDP:
         # No extension connected → 503
         assert resp.status == 503
 
+    @pytest.mark.asyncio
+    async def test_cdp_dialog_dismiss_method(self, client):
+        """POST /cdp with Page.handleJavaScriptDialog passes method validation."""
+        # Accept dialog
+        resp = await client.post("/cdp", json={"method": "Page.handleJavaScriptDialog", "params": {"accept": True}})
+        assert resp.status == 503  # No extension connected
+        data = await resp.json()
+        assert "Extension not connected" in data.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_cdp_dialog_dismiss_with_prompt(self, client):
+        """Page.handleJavaScriptDialog with promptText is properly forwarded."""
+        resp = await client.post("/cdp", json={
+            "method": "Page.handleJavaScriptDialog",
+            "params": {"accept": True, "promptText": "hello"}
+        })
+        assert resp.status == 503
+        data = await resp.json()
+        assert "Extension not connected" in data.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_cdp_dialog_dismiss_negative(self, client):
+        """Page.handleJavaScriptDialog with accept=false."""
+        resp = await client.post("/cdp", json={
+            "method": "Page.handleJavaScriptDialog",
+            "params": {"accept": False}
+        })
+        assert resp.status == 503
+        data = await resp.json()
+        assert "Extension not connected" in data.get("error", "")
+
 
 # ====== Recent / Event Capture Tests ======
 
