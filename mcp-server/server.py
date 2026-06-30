@@ -64,23 +64,32 @@ _capture_opener = urllib.request.build_opener()
 def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, tab_id: int | None = None) -> dict:
     """Send a CDP command to the relay server. Uses shared connection for keep-alive.
     If tab_id is provided, routes to that specific tab attachment.
-    Falls back to _shared_tab_id if set via _set_tab()."""
+    Falls back to _shared_tab_id if set via _set_tab().
+    Auto-retries once if relay is temporarily unreachable."""
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
     effective_tab_id = tab_id if tab_id is not None else _shared_tab_id
     if effective_tab_id is not None:
         body_dict["tabId"] = effective_tab_id
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
-    try:
-        with _cdp_opener.open(req, timeout=timeout + 5) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode() if e.fp else "{}"
-        return {"error": f"HTTP {e.code}", "detail": json.loads(detail) if detail else {}}
-    except urllib.error.URLError as e:
-        return {"error": f"Connection failed: {e.reason}", "hint": "Is the CDP relay running on :9223?"}
-    except Exception as e:
-        return {"error": str(e)}
+    for attempt in range(2):
+        try:
+            with _cdp_opener.open(req, timeout=timeout + 5) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode() if e.fp else "{}"
+            return {"error": f"HTTP {e.code}", "detail": json.loads(detail) if detail else {}}
+        except (urllib.error.URLError, ConnectionError, OSError) as e:
+            if attempt == 0:
+                # Relay might be restarting — wait briefly and retry
+                import time as _tm
+                _tm.sleep(0.5)
+                if _wait_for_relay(timeout=3):
+                    continue
+            return {"error": f"Connection failed: {e}", "hint": "Is the CDP relay running on :9223?"}
+        except Exception as e:
+            return {"error": str(e)}
+    return {"error": "Connection failed after retry", "hint": "Is the CDP relay running on :9223?"}
 
 
 def _cdp_async(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT) -> dict:
@@ -110,15 +119,23 @@ def _parse_result(result: dict) -> Any:
 
 
 def _query_capture(path: str, timeout: int = 5) -> dict:
-    """Query the relay server's /recent endpoint. Returns parsed JSON or error dict."""
-    try:
-        req = urllib.request.Request(f"{CDP_SERVER}{path}")
-        with _capture_opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        return {"error": f"Relay server unreachable: {e.reason}", "hint": "Is server.py running on :9223?"}
-    except Exception as e:
-        return {"error": str(e)}
+    """Query the relay server's /recent endpoint. Returns parsed JSON or error dict.
+    Auto-retries once if relay is temporarily unreachable."""
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}{path}")
+            with _capture_opener.open(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.URLError as e:
+            if attempt == 0:
+                import time as _tm
+                _tm.sleep(0.5)
+                if _wait_for_relay(timeout=3):
+                    continue
+            return {"error": f"Relay server unreachable: {e.reason}", "hint": "Is server.py running on :9223?"}
+        except Exception as e:
+            return {"error": str(e)}
+    return {"error": "Relay unreachable after retry", "hint": "Is server.py running on :9223?"}
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +144,25 @@ def _query_capture(path: str, timeout: int = 5) -> dict:
 
 _connection_ok = False
 _watchdog_running = False
+
+
+def _wait_for_relay(timeout: float = 5.0) -> bool:
+    """Block until the relay server responds on /status.
+    Returns True if relay became reachable, False on timeout.
+    Used by _cdp() and _query_capture() to auto-recover from relay restarts."""
+    import time as _t
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}/status")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode())
+                _connection_ok = data.get("extension_connected", False) and data.get("tab_id") is not None
+                return True
+        except Exception:
+            _connection_ok = False
+        _t.sleep(0.3)
+    return False
 
 
 def _check_connection() -> bool:
