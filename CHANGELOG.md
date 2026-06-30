@@ -11,12 +11,16 @@
 - `browser_network_requests` — query captured webRequest events from relay buffer (`?type=webrequest` + event filter)
 - `browser_response_body` — query captured response bodies (JSON/PDF/matched patterns) from relay buffer
 - `browser_set_cookie` — inject cookies via CDP `Network.setCookie` (name, value, domain, path, secure, httpOnly, sameSite)
+- `browser_upload_file` — upload files via CDP `DOM.setFileInputFiles` (set file paths on `<input type=file>`)
+- `browser_form_fill` — bulk fill multiple form fields from a dict (label, placeholder, name, or CSS selector keys)
 - Relay `/recent` endpoint now supports `?type=`, `?since=` filters for targeted event queries
 
 ### Changed
 - Version bumped to 1.5.0 (1.0.0 → 1.5.0: 5 minor versions of accumulated features)
 - Relay `/recent` now captures all buffered events before filtering (was last *N*, now filters full buffer)
 - Plugin `base64` import moved to module level (was inline in browser_pdf only)
+- `browser_click_text` now traverses shadow DOM roots recursively to find elements in Lit/Vue/Shoelace components; also searches `[onclick]`, `[tabindex]`, and `select` elements
+- `browser_fill_by_label` now traverses shadow DOM roots to find labels and inputs inside web components (shadow-aware label, placeholder, and name matching)
 
 ## v1.4.0 (2026-06-29)
 
