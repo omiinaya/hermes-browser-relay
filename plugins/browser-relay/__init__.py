@@ -495,6 +495,33 @@ TOOL_SCHEMAS = [
             "required": ["name", "value"],
         },
     },
+    {
+        "name": "browser_upload_file",
+        "description": "Upload a file by setting the value of an <input type=file> element. Uses CDP DOM.setFileInputFiles to set the file path on the file input without requiring a file picker dialog.\n\nIMPORTANT: File paths must exist on the machine where Chrome is running (not the agent's machine).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the <input type=file> element"},
+                "file_paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute file path(s) to upload (on the Chrome host machine)"},
+            },
+            "required": ["selector", "file_paths"],
+        },
+    },
+    {
+        "name": "browser_form_fill",
+        "description": "Fill multiple form fields at once from a dictionary of {field_identifier: value} pairs. Field identifiers can be label text, placeholder, name, or CSS selector. More efficient than calling browser_fill_by_label repeatedly for multi-field forms.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "object",
+                    "description": "Dict of field identifier (label/placeholder/name) to value. E.g. {\"Email\": \"user@example.com\", \"Password\": \"secret123\", \"input[name=remember]\": \"true\"}",
+                    "additionalProperties": {"type": "string"},
+                },
+            },
+            "required": ["fields"],
+        },
+    },
 ]
 
 
@@ -744,7 +771,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             (() => {{
                 const q = {json.dumps(text_query)}.toLowerCase();
                 const tag = {json.dumps(tag_filter)};
-                const all = document.querySelectorAll('a, button, span, label, div[role=button], [role=link], [role=tab], input[type=submit], input[type=button]');
+                // Shadow DOM-aware queryAll
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const all = _shadowQueryAll(document, 'a, button, span, label, div[role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], select, [onclick], [tabindex]');
                 for (const el of all) {{
                     if (tag && el.tagName.toLowerCase() !== tag) continue;
                     const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
@@ -773,18 +808,38 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             fill_js = f"""
             (() => {{
                 const search = {json.dumps(label)}.toLowerCase();
+                // Shadow DOM-aware helpers
+                const _shadowQueryAll = (root, sel) => {{
+                    let r = [];
+                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
+                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+                    return r;
+                }};
+                const _shadowQuery = (root, sel) => _shadowQueryAll(root, sel)[0] || null;
+                // Try label association (light + shadow DOM)
                 let input = null;
-                for (const lbl of Array.from(document.querySelectorAll('label'))) {{
+                for (const lbl of _shadowQueryAll(document, 'label')) {{
                     if ((lbl.textContent||'').trim().toLowerCase().includes(search)) {{
                         const forId = lbl.getAttribute('for');
-                        if (forId) input = document.getElementById(forId) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
-                        else input = lbl.querySelector('input, textarea, select');
+                        if (forId) input = document.getElementById(forId) || _shadowQuery(document, '#' + CSS.escape(forId)) || _shadowQuery(document, 'input[name=' + JSON.stringify(forId) + ']');
+                        else input = lbl.querySelector('input, textarea, select') || _shadowQuery(lbl, 'input, textarea, select');
                         if (input) break;
                     }}
                 }}
-                if (!input) input = document.querySelector('input[placeholder*=' + JSON.stringify(label) + '], textarea[placeholder*=' + JSON.stringify(label) + ']');
-                if (!input) input = document.querySelector('[aria-label*=' + JSON.stringify(label) + ']');
-                if (!input) input = document.querySelector('input[name=' + JSON.stringify(label) + ']');
+                // Try placeholder (shadow-aware)
+                if (!input) {{
+                    for (const el of _shadowQueryAll(document, 'input, textarea')) {{
+                        const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+                        if (ph.toLowerCase().includes(search)) {{ input = el; break; }}
+                    }}
+                }}
+                // Try name (shadow-aware)
+                if (!input) {{
+                    for (const el of _shadowQueryAll(document, 'input, textarea')) {{
+                        if ((el.getAttribute('name') || '').toLowerCase().includes(search)) {{ input = el; break; }}
+                    }}
+                }}
                 if (!input) return {{ error: 'Could not find input for: ' + search }};
                 input.focus();
                 input.value = '';
@@ -1340,6 +1395,99 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 "cookie": params.get("name"),
                 "domain": params.get("domain", params.get("url", "any")),
             }, indent=2)
+
+        elif name == "browser_upload_file":
+            selector = args["selector"]
+            file_paths = args["file_paths"]
+            if not isinstance(file_paths, list):
+                file_paths = [file_paths]
+            # Validate the file input exists via JS
+            find_js = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return {{ error: 'File input not found: ' + {json.dumps(selector)} }};
+                if (el.tagName !== 'INPUT' || (el.type !== 'file' && el.getAttribute('type') !== 'file'))
+                    return {{ error: 'Not a file input: ' + el.tagName + ' type=' + (el.type || 'none') }};
+                return {{ found: true }};
+            }})()
+            """
+            check = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True}))
+            if isinstance(check, dict) and "error" in check:
+                return f"Error: {check['error']}"
+            # Get the backend node ID
+            doc_result = _cdp("DOM.getDocument", {"depth": 0})
+            if "error" in doc_result:
+                return f"Error getting DOM: {doc_result['error']}"
+            node_id_result = _cdp("DOM.querySelector", {"nodeId": doc_result["result"]["root"]["nodeId"], "selector": selector})
+            if "error" in node_id_result:
+                return f"Error finding node: {node_id_result['error']}"
+            node_id = node_id_result.get("result", {}).get("nodeId")
+            if not node_id:
+                return f"Error: Could not find node for selector: {selector}"
+            files_result = _cdp("DOM.setFileInputFiles", {"nodeId": node_id, "files": file_paths})
+            if "error" in files_result:
+                return f"Error setting files: {files_result['error']}"
+            return json.dumps({"success": True, "files": file_paths}, indent=2)
+
+        elif name == "browser_form_fill":
+            fields = args["fields"]
+            results = []
+            import time as _ff_mod
+            for identifier, value in fields.items():
+                value_str = str(value)
+                if identifier.startswith("input[") or identifier.startswith("#") or identifier.startswith(".") or identifier.startswith("[") or identifier.startswith(":") or identifier.count(" ") > 0:
+                    fill_js = f"""
+                    (() => {{
+                        const el = document.querySelector({json.dumps(identifier)});
+                        if (!el) return {{ error: 'Not found: ' + {json.dumps(identifier)} }};
+                        if (el.tagName === 'SELECT') {{
+                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
+                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,tag:'SELECT'}}; }}
+                            return {{error:'Option not found'}};
+                        }}
+                        el.focus(); el.value = ''; el.select();
+                        document.execCommand('insertText', false, {json.dumps(value_str)});
+                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
+                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                        return {{ok:true,tag:el.tagName}};
+                    }})()
+                    """
+                else:
+                    fill_js = f"""
+                    (() => {{
+                        const s = {json.dumps(identifier)}.toLowerCase();
+                        const _sq = (r,sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                        let el = null;
+                        for (const lbl of _sq(document, 'label')) {{
+                            if ((lbl.textContent||'').trim().toLowerCase().includes(s)) {{
+                                const fid = lbl.getAttribute('for');
+                                if (fid) el = document.getElementById(fid);
+                                else el = lbl.querySelector('input,textarea,select');
+                                if (el) break;
+                            }}
+                        }}
+                        if (!el) {{ for (const e of _sq(document, 'input,textarea')) {{ const ph = e.getAttribute('placeholder')||e.getAttribute('aria-label')||''; if(ph.toLowerCase().includes(s)){{el=e;break;}} }} }}
+                        if (!el) {{ for (const e of _sq(document, 'input,textarea')) {{ if((e.getAttribute('name')||'').toLowerCase().includes(s)){{el=e;break;}} }} }}
+                        if (!el) return {{error:'Not found: '+s}};
+                        if (el.tagName === 'SELECT') {{
+                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
+                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,tag:'SELECT'}}; }}
+                            return {{error:'Option not found'}};
+                        }}
+                        el.focus(); el.value = ''; el.select();
+                        document.execCommand('insertText', false, {json.dumps(value_str)});
+                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
+                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                        return {{ok:true,tag:el.tagName}};
+                    }})()
+                    """
+                r = _parse_result(_cdp("Runtime.evaluate", {"expression": fill_js, "returnByValue": True}))
+                if isinstance(r, dict) and "error" in r:
+                    results.append({"field": identifier, "error": r["error"]})
+                else:
+                    results.append({"field": identifier, "set": True})
+                _ff_mod.sleep(0.05)
+            return json.dumps({"results": results, "filled": sum(1 for r in results if r.get("set")), "failed": sum(1 for r in results if "error" in r)}, indent=2)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
