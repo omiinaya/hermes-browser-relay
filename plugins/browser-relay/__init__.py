@@ -779,10 +779,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             if not amount:
                 amount = int(_parse_result(_cdp("Runtime.evaluate", {"expression": "Math.round(window.innerHeight * 0.6)", "returnByValue": True})) or 400)
             dx, dy = 0, 0
-            if direction == "down": dy = amount
-            elif direction == "up": dy = -amount
-            elif direction == "right": dx = amount
-            elif direction == "left": dx = -amount
+            if direction == "down":
+                dy = amount
+            elif direction == "up":
+                dy = -amount
+            elif direction == "right":
+                dx = amount
+            elif direction == "left":
+                dx = -amount
             _cdp("Runtime.evaluate", {"expression": f"window.scrollBy({{left:{dx}, top:{dy}, behavior:'smooth'}})"})
             return f"Scrolled {direction} by {abs(dx or dy)}px"
 
@@ -800,7 +804,6 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        import asyncio as _a
                         _t.sleep(0.5)  # synchronous sleep since we're not in an async context
                 except RuntimeError:
                     _t.sleep(0.5)
@@ -913,12 +916,16 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 lines = [f"📊 {ev_count} recent events:", ""]
                 for e in events:
                     etype = e.get("type", "?")
-                    if etype == "tab": lines.append(f"  🏁 NAV: {e.get('url','')[:120]}")
-                    elif etype == "download": lines.append(f"  📥 DOWNLOAD: {e.get('filename',e.get('url',''))[:120]}")
+                    if etype == "tab":
+                        lines.append(f"  🏁 NAV: {e.get('url','')[:120]}")
+                    elif etype == "download":
+                        lines.append(f"  📥 DOWNLOAD: {e.get('filename',e.get('url',''))[:120]}")
                     elif etype == "webrequest" and e.get("event") in ("completed","error"):
                         lines.append(f"  🌐 {e['event']}: {e.get('method','?')} {e.get('statusCode','?')} {e.get('url','')[:100]}")
-                    elif etype == "response_body": lines.append(f"  📄 BODY: {e.get('url','')[:100]}")
-                if len(lines) <= 2: lines.append("  (no events yet)")
+                    elif etype == "response_body":
+                        lines.append(f"  📄 BODY: {e.get('url','')[:100]}")
+                if len(lines) <= 2:
+                    lines.append("  (no events yet)")
                 return "\n".join(lines)
             except Exception as e:
                 return json.dumps({"error": str(e)})
@@ -1157,8 +1164,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 total = d.get("totalBytes", 0)
                 lines.append(f"  {icon} {filename}")
                 lines.append(f"     {url}")
-                if state: lines.append(f"     State: {state}")
-                if total: lines.append(f"     Size: {total} bytes")
+                if state:
+                    lines.append(f"     State: {state}")
+                if total:
+                    lines.append(f"     Size: {total} bytes")
             return "\n".join(lines)
 
         elif name == "browser_refresh":
@@ -1299,7 +1308,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             for a in (annotations if isinstance(annotations, list) else []):
                 lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
             if data:
-                import tempfile, os, base64
+                import os
                 img_dir = os.path.expanduser("~/.hermes/image_cache")
                 os.makedirs(img_dir, exist_ok=True)
                 img_path = os.path.join(img_dir, f"annotated_{int(__import__('time').time())}.png")
@@ -1324,7 +1333,6 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return json.dumps({"error": result["error"]})
             data = result.get("result", {}).get("data", "")
             if data:
-                import base64
                 pdf_bytes = base64.b64decode(data)
                 return json.dumps({
                     "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
@@ -1431,12 +1439,18 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 "name": args["name"],
                 "value": args["value"],
             }
-            if "url" in args: params["url"] = args["url"]
-            if "domain" in args: params["domain"] = args["domain"]
-            if "path" in args: params["path"] = args["path"]
-            if args.get("secure"): params["secure"] = True
-            if args.get("httpOnly"): params["httpOnly"] = True
-            if "sameSite" in args: params["sameSite"] = args["sameSite"]
+            if "url" in args:
+                params["url"] = args["url"]
+            if "domain" in args:
+                params["domain"] = args["domain"]
+            if "path" in args:
+                params["path"] = args["path"]
+            if args.get("secure"):
+                params["secure"] = True
+            if args.get("httpOnly"):
+                params["httpOnly"] = True
+            if "sameSite" in args:
+                params["sameSite"] = args["sameSite"]
             result = _cdp("Network.setCookie", params)
             if "error" in result:
                 return json.dumps({"error": result["error"]})

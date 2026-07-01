@@ -13,10 +13,13 @@ import io
 import base64
 import urllib.request
 import urllib.error
-import threading
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent, ImageContent
 
 # ---------------------------------------------------------------------------
 # Interactive element CSS selectors for snapshot
@@ -32,10 +35,6 @@ _INTERACTIVE_SELECTORS = [
 def _js_quote(s: str) -> str:
     """JSON-encode a string for safe JS interpolation."""
     return json.dumps(s)
-
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent, ImageContent
 
 # ---------------------------------------------------------------------------
 # CDP Relay Client (with connection reuse)
@@ -186,9 +185,9 @@ def _watchdog_loop():
     while _watchdog_running:
         ok = _check_connection()
         if ok and not was_ok:
-            print(f"[watchdog] CDP relay connected (tab attached)", flush=True)
+            print("[watchdog] CDP relay connected (tab attached)", flush=True)
         elif not ok and was_ok:
-            print(f"[watchdog] CDP relay disconnected — will retry...", flush=True)
+            print("[watchdog] CDP relay disconnected — will retry...", flush=True)
         _connection_ok = ok
         was_ok = ok
         _t.sleep(15)
@@ -900,10 +899,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 amount_js = "Math.round(window.innerHeight * 0.6)"
                 amount = int(_parse_result(_cdp("Runtime.evaluate", {"expression": amount_js, "returnByValue": True})) or 400)
             dx, dy = 0, 0
-            if direction == "down": dy = amount
-            elif direction == "up": dy = -amount
-            elif direction == "right": dx = amount
-            elif direction == "left": dx = -amount
+            if direction == "down":
+                dy = amount
+            elif direction == "up":
+                dy = -amount
+            elif direction == "right":
+                dx = amount
+            elif direction == "left":
+                dx = -amount
             _cdp("Runtime.evaluate", {"expression": f"window.scrollBy({{left:{dx}, top:{dy}, behavior:'smooth'}})", "returnByValue": True})
             return [TextContent(type="text", text=f"Scrolled {direction} by {abs(dx or dy)}px")]
 
@@ -911,7 +914,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             selector = arguments["selector"]
             timeout = min(arguments.get("timeout", 15), 60)
             state = arguments.get("state", "visible")
-            import asyncio, time as ttime
+            import asyncio
+            import time as ttime
             deadline = ttime.time() + timeout
             while ttime.time() < deadline:
                 check_js = f"""
@@ -1407,8 +1411,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 total = d.get("totalBytes", 0)
                 lines.append(f"  {icon} {filename}")
                 lines.append(f"     {url}")
-                if state: lines.append(f"     State: {state}")
-                if total: lines.append(f"     Size: {total} bytes")
+                if state:
+                    lines.append(f"     State: {state}")
+                if total:
+                    lines.append(f"     Size: {total} bytes")
             return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "browser_refresh":
@@ -1507,7 +1513,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             events = result.get("events", [])
             lines = [f"📊 {ev_count} recent events (of {result.get('total', '?')} total):", ""]
             for e in events:
-                ts = e.get("_received", "")
                 etype = e.get("type", e.get("eventType", "?"))
                 if etype == "tab":
                     lines.append(f"  🏁 NAV: {e.get('url', '')[:120]}")
@@ -1638,12 +1643,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 "name": arguments["name"],
                 "value": arguments["value"],
             }
-            if "url" in arguments: params["url"] = arguments["url"]
-            if "domain" in arguments: params["domain"] = arguments["domain"]
-            if "path" in arguments: params["path"] = arguments["path"]
-            if "secure" in arguments: params["secure"] = arguments["secure"]
-            if "httpOnly" in arguments: params["httpOnly"] = arguments["httpOnly"]
-            if "sameSite" in arguments: params["sameSite"] = arguments["sameSite"]
+            if "url" in arguments:
+                params["url"] = arguments["url"]
+            if "domain" in arguments:
+                params["domain"] = arguments["domain"]
+            if "path" in arguments:
+                params["path"] = arguments["path"]
+            if "secure" in arguments:
+                params["secure"] = arguments["secure"]
+            if "httpOnly" in arguments:
+                params["httpOnly"] = arguments["httpOnly"]
+            if "sameSite" in arguments:
+                params["sameSite"] = arguments["sameSite"]
             result = _cdp("Network.setCookie", params)
             if "error" in result:
                 return [TextContent(type="text", text=f"Error: {result['error']}")]
@@ -1773,9 +1784,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_create_tab":
             url = arguments.get("url", "about:blank")
             active = arguments.get("active", True)
-            cdp_id = int(time.time() * 1000000) % (2**31)
-            import time as _ct_tm
-            cmd = {"id": cdp_id, "tabCommand": "create", "url": url, "active": active}
             try:
                 req = urllib.request.Request(
                     f"{CDP_SERVER}/tabs/create",
@@ -1821,7 +1829,6 @@ def main():
     async def run():
         async with stdio_server() as (read_stream, write_stream):
             await app.run(read_stream, write_stream, app.create_initialization_options())
-    import asyncio
     asyncio.run(run())
 
 
