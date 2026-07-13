@@ -2070,6 +2070,42 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                     elif act == "enter":
                         _hermes_call("key", "Enter")
                         results.append(f"[{i+1}] Pressed Enter")
+                    elif act == "hover":
+                        sel = action["selector"]
+                        hv_r = _hermes_call("hover", sel)
+                        hv_v = _parse_result(hv_r)
+                        if isinstance(hv_v, dict) and hv_v.get("ok"):
+                            results.append(f"[{i+1}] Hovered '{sel}'")
+                        else:
+                            results.append(f"[{i+1}] Hover failed: {hv_v}")
+                    elif act == "click_text":
+                        text_query = action["text"]
+                        tag_filter = action.get("tag", "")
+                        ct_r = _hermes_call("clickText", text_query, tag_filter)
+                        ct_v = _parse_result(ct_r)
+                        if isinstance(ct_v, dict) and "error" not in ct_v:
+                            results.append(f"[{i+1}] Clicked text '{text_query}'")
+                        else:
+                            results.append(f"[{i+1}] Click-text failed: {ct_v}")
+                    elif act == "key":
+                        k = action.get("key", "Escape")
+                        _hermes_call("key", k)
+                        results.append(f"[{i+1}] Pressed {k}")
+                    elif act == "screenshot":
+                        shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+                        if "error" not in shot:
+                            results.append(f"[{i+1}] Screenshot captured")
+                        else:
+                            results.append(f"[{i+1}] Screenshot failed")
+                    elif act == "fill_by_label":
+                        lbl = action["label"]
+                        txt = action["text"]
+                        fl_r = _hermes_call("fillByLabel", lbl, txt)
+                        fl_v = _parse_result(fl_r)
+                        if isinstance(fl_v, dict) and "error" not in fl_v:
+                            results.append(f"[{i+1}] Filled '{lbl}'")
+                        else:
+                            results.append(f"[{i+1}] Fill failed: {fl_v}")
                     elif act == "scroll":
                         d = action.get("direction", "down")
                         a = action.get("amount", 0)
@@ -2127,7 +2163,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 if isinstance(ready, dict):
                     rs = ready.get("readyState", "")
                     if rs == "complete":
-                        return [TextContent(type="text", text=f"✅ Loaded: {ready.get('title', '?')}\n🌐 {url}")]
+                        # Auto-snapshot: return page state inline — saves one LLM round-trip
+                        do_snap = arguments.get("snapshot", True)
+                        if do_snap:
+                            snap_data = _parse_result(_hermes_call("snapshot", False))
+                        else:
+                            snap_data = None
+                        title = ready.get("title", "?")
+                        lines = [f"✅ Loaded: {title}", f"🌐 {url}"]
+                        if isinstance(snap_data, dict) and "error" not in snap_data:
+                            info = snap_data.get("info", {})
+                            items = snap_data.get("items", [])
+                            lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')}  —  {info.get('visible','?')} visible of {info.get('total','?')} interactive elements")
+                            lines.append("")
+                            for it in items[:50]:
+                                vis = "" if it["visible"] else "⬆"
+                                label = it["text"] or it["placeholder"] or it.get("aria_label", "") or it["name"] or it["href"] or it["role"]
+                                lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+                            if len(items) > 50:
+                                lines.append(f"  ... and {len(items) - 50} more")
+                        return [TextContent(type="text", text="\n".join(lines))]
                 _t.sleep(0.3)
             return [TextContent(type="text", text=f"⏱️ Page did not finish loading within {timeout}s: {url}")]
 
