@@ -1693,6 +1693,30 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     elif action == "enter":
                         _hermes_call("key", "Enter")
                         results.append("Pressed Enter")
+                    elif action == "hover":
+                        sel = act["selector"]
+                        hv_r = _hermes_call("hover", sel)
+                        hv_v = _parse_result(hv_r)
+                        results.append(f"Hovered '{sel}'" if isinstance(hv_v, dict) and hv_v.get("ok") else f"Hover failed: {hv_v}")
+                    elif action == "click_text":
+                        text_query = act["text"]
+                        tag_filter = act.get("tag", "")
+                        ct_r = _hermes_call("clickText", text_query, tag_filter)
+                        ct_v = _parse_result(ct_r)
+                        results.append(f"Clicked text '{text_query}'" if isinstance(ct_v, dict) and "error" not in ct_v else f"Click-text failed: {ct_v}")
+                    elif action == "key":
+                        k = act.get("key", "Escape")
+                        _hermes_call("key", k)
+                        results.append(f"Pressed {k}")
+                    elif action == "screenshot":
+                        shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+                        results.append("Screenshot captured" if "error" not in shot else "Screenshot failed")
+                    elif action == "fill_by_label":
+                        lbl = act["label"]
+                        txt = act["text"]
+                        fl_r = _hermes_call("fillByLabel", lbl, txt)
+                        fl_v = _parse_result(fl_r)
+                        results.append(f"Filled '{lbl}'" if isinstance(fl_v, dict) and "error" not in fl_v else f"Fill failed: {fl_v}")
                     elif action == "scroll":
                         d = act.get("direction", "down"); a = act.get("amount", 0)
                         _hermes_call("scrollBy", d, a)
@@ -1741,7 +1765,25 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             while _t.time() < deadline:
                 ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
                 if isinstance(ready, dict) and ready.get("readyState") == "complete":
-                    return f"Loaded: {ready.get('title', '?')}"
+                    title = ready.get("title", "?")
+                    do_snap = args.get("snapshot", True)
+                    if do_snap:
+                        snap_data = _parse_result(_hermes_call("snapshot", False))
+                    else:
+                        snap_data = None
+                    lines = [f"✅ Loaded: {title}", f"🌐 {url}"]
+                    if isinstance(snap_data, dict) and "error" not in snap_data:
+                        info = snap_data.get("info", {})
+                        items = snap_data.get("items", [])
+                        lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')} — {info.get('visible','?')} visible of {info.get('total','?')} elements")
+                        lines.append("")
+                        for it in items[:50]:
+                            vis = "" if it["visible"] else "⬆"
+                            label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it.get("name", "") or it.get("href", "") or it["tag"]
+                            lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+                        if len(items) > 50:
+                            lines.append(f"  ... and {len(items) - 50} more")
+                    return "\n".join(lines)
                 _t.sleep(0.3)
             return f"Timed out loading: {url}"
 
