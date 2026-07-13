@@ -1726,6 +1726,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
         elif name == "browser_wait_for_navigation":
             import time as _time_module
+            import asyncio as _asyncio
             tab_id = arguments.get("tab_id")
             timeout = min(arguments.get("timeout", 30), 120)
             deadline = _time_module.time() + timeout
@@ -1743,11 +1744,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                                 "tabId": e.get("tabId"),
                                 "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
                             }, indent=2))]
-                import asyncio as _asyncio
-                try:
-                    _asyncio.sleep(0.5)
-                except RuntimeError:
-                    pass
+                await _asyncio.sleep(0.5)
             return [TextContent(type="text", text=json.dumps({
                 "navigated": False,
                 "error": f"Navigation timeout after {timeout}s",
@@ -2176,7 +2173,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                             items = snap_data.get("items", [])
                             lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')}  —  {info.get('visible','?')} visible of {info.get('total','?')} interactive elements")
                             lines.append("")
-                            for it in items[:50]:
+                            for it in items[:60]:
                                 vis = "" if it["visible"] else "⬆"
                                 label = it["text"] or it["placeholder"] or it.get("aria_label", "") or it["name"] or it["href"] or it["role"]
                                 lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")

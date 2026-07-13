@@ -36,6 +36,35 @@ def _set_tab(arguments: dict | None) -> None:
     global _shared_tab_id
     _shared_tab_id = arguments.get("tab_id") if arguments else None
 
+
+def _js_quote(s: str) -> str:
+    """JSON-encode a string for safe JS interpolation."""
+    return json.dumps(s)
+
+
+def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
+    """Call __hermes.<func_name>(args) via content script fast path.
+    
+    Attempts content script routing first (no CDP overhead). Falls back to
+    Runtime.evaluate if content script is unavailable (e.g. page just navigated)."""
+    result = _cdp("__hermes", {}, _hermes=True,
+                  _hermesFunc=func_name, _hermesArgs=list(args))
+    error = result.get("error", {})
+    if isinstance(error, dict) and error.get("_fallback"):
+        time.sleep(0.08)
+        result = _cdp("__hermes", {}, _hermes=True,
+                      _hermesFunc=func_name, _hermesArgs=list(args))
+        error = result.get("error", {})
+        if isinstance(error, dict) and error.get("_fallback"):
+            js_args = ', '.join(json.dumps(a) for a in args)
+            if fallback:
+                full_js = f"(typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})) || ({fallback})"
+            else:
+                full_js = f"typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})"
+            result = _cdp("Runtime.evaluate", {"expression": full_js, "returnByValue": True})
+    return result
+
+
 # ---------------------------------------------------------------------------
 # CDP Relay Client
 # ---------------------------------------------------------------------------
@@ -1820,7 +1849,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         items = snap_data.get("items", [])
                         lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')} — {info.get('visible','?')} visible of {info.get('total','?')} elements")
                         lines.append("")
-                        for it in items[:50]:
+                        for it in items[:60]:
                             vis = "" if it["visible"] else "⬆"
                             label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it.get("name", "") or it.get("href", "") or it["tag"]
                             lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
