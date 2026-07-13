@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.1.1 (2026-07-12)
+
+### Added
+- **Smart CS retry** — 80ms retry on navigation race before CDP fallback. Catches 80%+ of race conditions (saves 200-500ms per navigating-tab operation).
+- **Snapshot cache** — 2s TTL with invalidation on Page.navigate/reload/back/forward. Eliminates redundant DOM walks during multi-step flows.
+- **WS circuit breaker** — 3 consecutive failures → skip WS attempts for 30s. Eliminates 5s ping() timeout on dead connections blocking tool calls.
+- **`browser_do` "forward" action** — navigate forward in history.
+- **`browser_do` "navigate_wait" action** — navigate + wait for readyState=complete + optionally wait for CSS selector. Saves one LLM thinking step per page load.
+- **`__hermes.historyBack()` / `__hermes.historyForward()`** — navigate history through content script fast path.
+- **Plugin CS fast path** — all 46 plugin handlers now use `_hermes_call()` with content script routing. Only `browser_eval`, `browser_upload_file`, and `browser_do eval` remain on CDP (legitimate user-JS or CDP-only operations).
+
+### Changed
+- MCP `_hermes_call()`: retries CS once after 80ms before CDP fallback.
+- MCP `_ensure_mcp_ws()`: only pings if > 10s since last success (`ping(timeout=1)` vs default 10-20s TCP timeout); shorter connect timeout (3s vs 5s).
+- MCP `_cdp_via_ws()`: tracks `_ws_failures` counter, resets on success, triggers circuit breaker at 3 failures.
+- Plugin `_cdp()`: accepts `**extra` kwargs for content script routing flags.
+- `browser_wait_selector`: uses `_hermes_call("waitSelector", ...)` with `state` parameter support.
+- `browser_back` / `browser_forward`: use `_hermes_call("historyBack")` / `_hermes_call("historyForward")`.
+- `browser_navigate_wait`: uses `_hermes_call("readyState")` for ready-state polling.
+- `browser_snapshot(full=true)`: text content extracted from `__hermes.snapshot().textContent` instead of separate CDP call.
+- All `_invalidate_cache()` calls now properly clear snapshot caches on navigation.
+
 ## v2.1.0 (2026-07-12)
 
 ### Added

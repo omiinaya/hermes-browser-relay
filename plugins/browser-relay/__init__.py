@@ -1652,6 +1652,29 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     if action == "navigate":
                         _cdp("Page.navigate", {"url": act["url"]})
                         results.append(f"Navigated to {act.get('url', '?')}")
+                    elif action == "navigate_wait":
+                        url = act["url"]
+                        to = min(act.get("timeout", 15), 60)
+                        _cdp("Page.navigate", {"url": url})
+                        import time as _nwt
+                        deadline = _nwt.time() + to
+                        title = "?"
+                        while _nwt.time() < deadline:
+                            ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
+                            if isinstance(ready, dict):
+                                title = ready.get("title", "?")
+                                if ready.get("readyState") == "complete":
+                                    break
+                            _nwt.sleep(0.3)
+                        wait_for = act.get("wait_for")
+                        if wait_for:
+                            ws_v = _parse_result(_hermes_call("waitSelector", wait_for, to, "visible"))
+                            if isinstance(ws_v, dict) and ws_v.get("ok"):
+                                results.append(f"Navigate-wait: '{title}' loaded, '{wait_for}' visible")
+                            else:
+                                results.append(f"Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
+                        else:
+                            results.append(f"Navigate-wait: '{title}' loaded")
                     elif action == "wait_selector":
                         sel = act["selector"]
                         to = min(act.get("timeout", 10), 60)
