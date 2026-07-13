@@ -7,7 +7,8 @@ const result=fn.apply(window.__hermes,msg.args||[]);if(result&&typeof result.the
 sendResponse({ok:true,result:result});}catch(e){sendResponse({ok:false,error:e.message,stack:e.stack?e.stack.substring(0,500):''});}
 return true;}
 if(msg.type==='hermes_ping'){sendResponse({ok:hermesReady&&!!window.__hermes,ready:hermesReady});return true;}
-return false;});let lastStateKey='';let pushThrottle=false;function getStateSnapshot(){const h=window.__hermes;if(!h||!h.getStateSnapshot)return null;try{return h.getStateSnapshot();}catch(e){return null;}}
-function sendPushEvent(type,extra){const state=getStateSnapshot();if(!state)return;const key=`${state.total}:${state.visible}:${state.readyState}`;if(key===lastStateKey)return;lastStateKey=key;try{chrome.runtime.sendMessage(Object.assign({type:type},extra,{state:state}));}catch(e){}}
-const observer=new MutationObserver(()=>{if(pushThrottle)return;pushThrottle=true;setTimeout(()=>{pushThrottle=false;},500);sendPushEvent('page_updated');});function startObserver(){try{observer.observe(document,{childList:true,subtree:true,attributes:true,characterData:false,});}catch(e){}}
-waitForHermes(()=>{sendPushEvent('page_loaded',{url:location.href,title:document.title,});startObserver();});})();
+return false;});let lastStateKey='';let pushTimer=null;function getStateSnapshot(){const h=window.__hermes;if(!h||!h.getStateSnapshot)return null;try{return h.getStateSnapshot();}catch(e){return null;}}
+function sendPushEvent(type,extra){const state=getStateSnapshot();if(!state)return;const key=String(state.total)+':'+String(state.visible)+':'+state.readyState;if(key===lastStateKey)return;lastStateKey=key;try{chrome.runtime.sendMessage(Object.assign({type:type},extra,{state:state}));}catch(e){}}
+function debouncedPush(){if(pushTimer)clearTimeout(pushTimer);pushTimer=setTimeout(function(){pushTimer=null;sendPushEvent('page_updated');},250);}
+const observer=new MutationObserver(function(){debouncedPush();});function startObserver(){try{observer.observe(document,{childList:true,subtree:true,attributes:true,characterData:false,});}catch(e){}}
+waitForHermes(function(){sendPushEvent('page_loaded',{url:location.href,title:document.title,});startObserver();});})();
