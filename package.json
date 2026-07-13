@@ -1,0 +1,13 @@
+{
+  "name": "browser-relay-extension-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/extensions/*.test.js",
+    "test:watch": "node --test --watch tests/extensions/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}
