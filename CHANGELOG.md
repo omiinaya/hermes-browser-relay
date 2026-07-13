@@ -3,13 +3,16 @@
 ## v2.2.0 (2026-07-12)
 
 ### Fixed
+- **Snapshot push events no longer trigger full DOM walk** — `content-script.js`'s `getStateSnapshot()` was calling `__hermes.snapshot(false)` (full DOM walk with shadow DOM recursion + bounding rects for thousands of elements) every 500ms just to generate element counts for dedup. Now calls lightweight `__hermes.getStateSnapshot()` which does a single `querySelectorAll` + basic visibility check. ~10x cheaper on dynamic pages.
+- **Bug: `jsmin` stripped space in template literal error message** — `__hermes.${func}is not a function` (no space before "is"). Switched to string concatenation. Error messages now read correctly.
 - **Blocking `time.sleep()` → `await asyncio.sleep()` in async `call_tool()`** — two poll loops in `browser_do` navigate_wait and `browser_navigate_wait` were using `time.sleep()` inside an `async def`, blocking the event loop. Now use `await asyncio.sleep()` — frames don't stall during page-wait polling.
 - **Snapshot overflow message mismatch** — `browser_navigate_wait` auto-snapshot showed "50+ more" despite showing 60 items. Now consistently shows "60+ more". (Line 2180-2181.)
 - **Promise rejection in content script** — async helper methods (like the new rAF-based `waitSelector`) that reject their Promise would hang the message channel. Added `.catch()` handler that sends an error response.
 
 ### Changed
+- **Added `__hermes.getStateSnapshot()`** — lightweight page state snapshot (~10x cheaper than `snapshot(false)`) for push event dedup. Uses single `querySelectorAll` + basic visibility check instead of full DOM walk with shadow DOM traversal + per-element bounding rects.
 - **`waitSelector` migrated from busy-wait to rAF-based polling** — `__hermes.waitSelector()` no longer locks the browser's main thread with `while(Date.now() < deadline)` busy-loop. Instead uses `requestAnimationFrame`-scheduled async polling. Content script dispatcher detects Promise returns and awaits them before sending response.
-- **`content-script.js` minified** — 6.5 KB → 2.4 KB (63% reduction). Reduces injection overhead at `document_start`.
+- **`content-script.js` minified** — 6.5 KB → 2.4 KB (63% reduction).
 - **`hermes-helper.min.js` regenerated** — 30 KB → 14 KB (54% reduction, vs 18 KB previous min). Includes `waitSelector` rAF fix.
 
 ## v2.1.1 (2026-07-12)
