@@ -198,7 +198,7 @@ async def handle_extension(request):
                             log.exception("Event subscriber error")
                     continue
 
-                if msg_type in ("download", "tab"):
+                if msg_type in ("download", "tab", "page_event"):
                     _capture_event(data)
                     for cb in list(event_subscribers):
                         try:
@@ -242,19 +242,31 @@ async def handle_extension(request):
         pending_requests.clear()
 
 
-async def _process_cdp_command(body):
-    """Shared CDP command execution logic (used by both POST and GET handlers)."""
+def _http_status_for_error(error_msg: str) -> int:
+    """Infer HTTP status code from an error message."""
+    if error_msg.startswith("Extension not connected"):
+        return 503
+    if error_msg.startswith("Missing"):
+        return 400
+    if error_msg.startswith("Failed to send"):
+        return 502
+    if error_msg.startswith("CDP command timed out"):
+        return 504
+    return 400
+
+
+async def _execute_cdp_raw(body: dict) -> dict:
+    """Execute a CDP command and return the raw result dict.
+    This is the core execution logic, independent of transport.
+    """
     if not extension_ws or extension_ws.closed:
-        return web.json_response(
-            {"error": "Extension not connected", "hint": "Open Chrome extension and click Attach"},
-            status=503,
-        )
+        return {"error": "Extension not connected", "hint": "Open Chrome extension and click Attach"}
 
     method = body.get("method")
     params = body.get("params", {})
 
     if not method:
-        return web.json_response({"error": "Missing 'method'"}, status=400)
+        return {"error": "Missing 'method'"}
 
     # Generate unique ID
     cdp_id = int(time.time() * 1000000) % (2**31)
@@ -266,14 +278,15 @@ async def _process_cdp_command(body):
 
     # Send CDP command via extension
     cmd = {"id": cdp_id, "method": method, "params": params}
+    # Preserve _hermes routing fields and other extras
+    for extra_key in ("_hermes", "_hermesFunc", "_hermesArgs"):
+        if extra_key in body:
+            cmd[extra_key] = body[extra_key]
     try:
         await extension_ws.send_json(cmd)
     except Exception:
         pending_requests.pop(cdp_id, None)
-        return web.json_response(
-            {"error": "Failed to send CDP command to extension"},
-            status=502,
-        )
+        return {"error": "Failed to send CDP command to extension"}
 
     log.info(f"CDP -> {method} (id={cdp_id})")
 
@@ -281,13 +294,53 @@ async def _process_cdp_command(body):
     timeout = body.get("timeout", 60)
     try:
         result = await asyncio.wait_for(future, timeout=timeout)
-        return web.json_response(result)
+        return result
     except asyncio.TimeoutError:
         pending_requests.pop(cdp_id, None)
-        return web.json_response(
-            {"error": f"CDP command timed out after {timeout}s", "method": method},
-            status=504,
-        )
+        return {"error": f"CDP command timed out after {timeout}s", "method": method}
+
+
+async def _process_cdp_command(body):
+    """HTTP handler version of CDP command. Wraps result with HTTP status codes."""
+    result = await _execute_cdp_raw(body)
+    if isinstance(result, dict) and "error" in result:
+        return web.json_response(result, status=_http_status_for_error(result.get("error", "")))
+    return web.json_response(result)
+
+
+async def handle_mcp_connection(request):
+    """WebSocket handler for MCP server connection (persistent command channel).
+    
+    The MCP server connects via WS (ws://host:9223/mcp-ws) and sends CDP commands
+    as JSON messages. Each message is processed via _execute_cdp_raw (same logic as
+    HTTP POST /cdp) and the response is sent back over the same WS connection.
+    
+    This eliminates the HTTP POST overhead for every MCP tool call.
+    """
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    remote = request.remote
+    log.info(f"MCP server connected from {remote}")
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                # Process as CDP command (same logic as HTTP POST /cdp)
+                result = await _execute_cdp_raw(data)
+                # Send response back via WS
+                try:
+                    await ws.send_json(result)
+                except Exception:
+                    log.warning("Failed to send WS response to MCP server")
+                    break
+            elif msg.type == web.WSMsgType.ERROR:
+                log.error(f"MCP WebSocket error: {ws.exception()}")
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        log.exception("MCP WebSocket handler error")
+    finally:
+        log.info(f"MCP server disconnected (was from {remote})")
 
 
 async def handle_cdp_post(request):
@@ -754,6 +807,7 @@ async def main():
     app.router.add_get("/cdp", handle_cdp_get)
     app.router.add_post("/cdp", handle_cdp_post)
     app.router.add_get("/ws", handle_extension)
+    app.router.add_get("/mcp-ws", handle_mcp_connection)
     app.router.add_get("/events", handle_events_sse)
     app.router.add_get("/recent", handle_recent)
     app.router.add_get("/stats", handle_status)
@@ -770,10 +824,11 @@ async def main():
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v1.5.0           ║")
+    print("  ║     CDP Relay Server v2.1.0           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
     print(f"  Extension WS: ws://{args.host}:{args.port}/ws")
+    print(f"  MCP Server:   ws://{args.host}:{args.port}/mcp-ws  (persistent, no HTTP overhead)")
     print(f"  CDP API:      http://{args.host}:{args.port}/cdp")
     print(f"  Status:       http://{args.host}:{args.port}/status")
     print(f"  Events (SSE): http://{args.host}:{args.port}/events")
@@ -785,6 +840,7 @@ async def main():
     print(f"  → {Path(__file__).parent / 'extension'}")
     print()
     print("  Then: attach to a tab, then POST commands to /cdp")
+    print(f"  or: MCP server connects to ws://.../mcp-ws (persistent, no HTTP POST overhead)")
     print(f"  Heartbeat: every {HEARTBEAT_INTERVAL}s, timeout at {HEARTBEAT_TIMEOUT}s")
     print()
 

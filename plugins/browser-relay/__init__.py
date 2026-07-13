@@ -556,6 +556,33 @@ TOOL_SCHEMAS = [
             "required": ["tab_id"],
         },
     },
+    {
+        "name": "browser_do",
+        "description": "Execute multiple browser actions sequentially in ONE tool call. Supported: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text, wait.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Array of action objects, each with an 'action' field.",
+                },
+            },
+            "required": ["actions"],
+        },
+    },
+    {
+        "name": "browser_navigate_wait",
+        "description": "Navigate to a URL and wait until the page is fully loaded (readyState=complete).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to navigate to"},
+                "timeout": {"type": "integer", "description": "Max seconds to wait (default: 15, max: 60)", "default": 15},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 
@@ -1595,6 +1622,84 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return json.dumps(result, indent=2)
             except Exception as e:
                 return json.dumps({"error": str(e)})
+
+        elif name == "browser_do":
+            actions = args.get("actions", [])
+            if not actions or not isinstance(actions, list):
+                return json.dumps({"error": "actions must be a non-empty array"})
+            results = []
+            for act in actions:
+                action = act.get("action", "")
+                try:
+                    if action == "navigate":
+                        _cdp("Page.navigate", {"url": act["url"]})
+                        results.append(f"Navigated to {act.get('url', '?')}")
+                    elif action == "wait_selector":
+                        sel = act["selector"]
+                        to = min(act.get("timeout", 10), 60)
+                        wait_js = f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()"
+                        r = _parse_result(_cdp("Runtime.evaluate", {"expression": wait_js, "returnByValue": True}))
+                        results.append(f"Wait: '{sel}' {'visible' if isinstance(r, dict) and r.get('ok') else 'timeout'}")
+                    elif action == "click":
+                        sel = act["selector"]
+                        cr = _hermes_call("click", sel)
+                        v = _parse_result(cr)
+                        results.append(f"Clicked '{sel}'" if isinstance(v, dict) and v.get("ok") else f"Click failed: {v}")
+                    elif action == "type":
+                        sel = act["selector"]; txt = act["text"]
+                        _hermes_call("type", sel, txt)
+                        results.append(f"Typed into '{sel}'")
+                    elif action == "enter":
+                        _hermes_call("key", "Enter")
+                        results.append("Pressed Enter")
+                    elif action == "scroll":
+                        d = act.get("direction", "down"); a = act.get("amount", 0)
+                        _hermes_call("scrollBy", d, a)
+                        results.append(f"Scrolled {d}")
+                    elif action == "back":
+                        _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+                        results.append("Navigated back")
+                    elif action == "eval":
+                        expr = act["expression"]
+                        r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
+                        results.append(f"eval: {str(r)[:200]}")
+                    elif action == "snapshot":
+                        full = act.get("full", False)
+                        sn_r = _hermes_call("snapshot", full)
+                        sn_v = _parse_result(sn_r)
+                        if isinstance(sn_v, dict):
+                            info = sn_v.get("info", {})
+                            results.append(f"Snapshot: {info.get('visible',0)}/{info.get('total',0)} elements")
+                        else:
+                            results.append("Snapshot error")
+                    elif action == "get_text":
+                        gt_r = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0,10000) : ''")
+                        txt = str(_parse_result(gt_r))[:300]
+                        results.append(f"Text: {txt}")
+                    elif action == "wait":
+                        import time
+                        time.sleep(min(act.get("seconds", 1), 10))
+                        results.append(f"Waited {act.get('seconds', 1)}s")
+                    else:
+                        results.append(f"Unknown action: {action}")
+                except Exception as e:
+                    results.append(f"Error in '{action}': {e}")
+            return json.dumps({"completed": len(actions), "steps": results})
+
+        elif name == "browser_navigate_wait":
+            url = args["url"]
+            timeout = min(args.get("timeout", 15), 60)
+            nav_result = _cdp("Page.navigate", {"url": url})
+            if "error" in nav_result:
+                return json.dumps({"error": nav_result["error"]})
+            import time as _t
+            deadline = _t.time() + timeout
+            while _t.time() < deadline:
+                ready = _parse_result(_cdp("Runtime.evaluate", {"expression": "(typeof __hermes !== 'undefined' && __hermes.readyState()) || ({ readyState: document.readyState, title: document.title })", "returnByValue": True}))
+                if isinstance(ready, dict) and ready.get("readyState") == "complete":
+                    return f"Loaded: {ready.get('title', '?')}"
+                _t.sleep(0.3)
+            return f"Timed out loading: {url}"
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 

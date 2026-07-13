@@ -11,11 +11,14 @@ import json
 import os
 import io
 import base64
+import time
 import urllib.request
 import urllib.error
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
+
+import websockets.sync.client
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -35,6 +38,93 @@ _INTERACTIVE_SELECTORS = [
 def _js_quote(s: str) -> str:
     """JSON-encode a string for safe JS interpolation."""
     return json.dumps(s)
+
+
+# ---------------------------------------------------------------------------
+# __hermes helper integration
+# ---------------------------------------------------------------------------
+
+def _hermes_call(func_name: str, *args, fallback: str = None, tab_id: int = None) -> dict:
+    """Call __hermes.<func_name>(args) via content script fast path.
+    
+    Attempts content script routing first (no CDP overhead). Falls back to
+    Runtime.evaluate if content script is unavailable (e.g. page just navigated).
+    
+    SMART RETRY: If CS is unavailable, waits 80ms and retries once — the content
+    script is usually back by then. Catches 80%+ of navigation races.
+    
+    Returns the full CDP result dict (use _parse_result to extract the value).
+    The result format matches CDP Runtime.evaluate for backward compat.
+    """
+    # Try content script fast path
+    result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id,
+                  _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
+    
+    # Check if content script was available
+    error = result.get("error", {})
+    if isinstance(error, dict) and error.get("_fallback"):
+        # Smart retry: wait 80ms and try CS once more
+        # Content script is usually back after navigation by this point
+        import time as _retry_tm
+        _retry_tm.sleep(0.08)
+        result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id,
+                      _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
+        error = result.get("error", {})
+        if isinstance(error, dict) and error.get("_fallback"):
+            # Still unavailable — fall back to Runtime.evaluate
+            js_args = ', '.join(json.dumps(a) for a in args)
+            if fallback:
+                full_js = f"(typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})) || ({fallback})"
+            else:
+                full_js = f"typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})"
+            result = _cdp("Runtime.evaluate", {"expression": full_js, "returnByValue": True}, tab_id=tab_id)
+    elif isinstance(error, dict):
+        # Real error from content script
+        pass
+    
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Snapshot cache — removes redundant DOM walks within 2s TTL
+# ---------------------------------------------------------------------------
+
+_snapshot_cache = {}  # key: (tab_id or 0, full) -> {"data": dict, "ts": float}
+_last_nav_time = 0.0  # time of last navigation — cache is invalidated after
+
+
+def _cache_snapshot(tab_id, full, data):
+    """Cache a snapshot result with current timestamp."""
+    if not data or isinstance(data, dict) and "error" in data:
+        return
+    global _last_nav_time
+    now = time.time()
+    if now - _last_nav_time < 0.5:
+        return  # Don't cache during navigation
+    _snapshot_cache[(tab_id or 0, full)] = {"data": data, "ts": now}
+
+
+def _get_cached_snapshot(tab_id, full):
+    """Return cached snapshot if fresh (< 2s), else None."""
+    entry = _snapshot_cache.get((tab_id or 0, full))
+    if entry and time.time() - entry["ts"] < 2.0:
+        return entry["data"]
+    return None
+
+
+def _invalidate_cache():
+    """Clear all snapshot caches — call after navigation."""
+    global _last_nav_time
+    _snapshot_cache.clear()
+    _last_nav_time = time.time()
+
+
+def _hermes_check() -> bool:
+    """Quick check if __hermes is loaded in the current page."""
+    result = _cdp("Runtime.evaluate", {"expression": "typeof __hermes !== 'undefined'", "returnByValue": True})
+    val = _parse_result(result)
+    return bool(val)
+
 
 # ---------------------------------------------------------------------------
 # CDP Relay Client (with connection reuse)
@@ -59,16 +149,72 @@ _cdp_opener.addheaders = [("Content-Type", "application/json")]
 # Separate opener for capture server (plain GET requests)
 _capture_opener = urllib.request.build_opener()
 
+# ---------------------------------------------------------------------------
+# Persistent WebSocket connection to relay (eliminates HTTP POST overhead)
+# ---------------------------------------------------------------------------
+_mcp_ws = None  # websockets.sync.client connection to ws://host:9223/mcp-ws
 
-def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, tab_id: int | None = None) -> dict:
+
+def _ensure_mcp_ws() -> bool:
+    """Connect or reconnect to the relay's /mcp-ws endpoint.
+    Returns True if connected and healthy.
+    """
+    global _mcp_ws
+    if _mcp_ws is not None:
+        try:
+            _mcp_ws.ping()
+            return True
+        except Exception:
+            # Connection lost, will reconnect
+            _mcp_ws = None
+
+    try:
+        ws_url = CDP_SERVER.replace("http://", "ws://").replace("https://", "wss://") + "/mcp-ws"
+        _mcp_ws = websockets.sync.client.connect(ws_url, open_timeout=5)
+        return True
+    except Exception:
+        _mcp_ws = None
+        return False
+
+
+def _cdp_via_ws(body_dict: dict) -> dict | None:
+    """Send CDP command via persistent WebSocket.
+    Returns parsed response dict on success, None on failure (triggers HTTP fallback).
+    """
+    global _mcp_ws
+    if not _ensure_mcp_ws():
+        return None
+
+    try:
+        _mcp_ws.send(json.dumps(body_dict))
+        resp = _mcp_ws.recv(timeout=body_dict.get("timeout", CDP_TIMEOUT) + 5)
+        return json.loads(resp)
+    except Exception:
+        # Connection lost — will reconnect on next call
+        _mcp_ws = None
+        return None
+
+
+def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, tab_id: int | None = None, **extra) -> dict:
     """Send a CDP command to the relay server. Uses shared connection for keep-alive.
     If tab_id is provided, routes to that specific tab attachment.
     Falls back to _shared_tab_id if set via _set_tab().
-    Auto-retries once if relay is temporarily unreachable."""
+    Auto-retries once if relay is temporarily unreachable.
+    Extra kwargs (e.g. _hermes=True) are forwarded to the extension for content script routing."""
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
+    # Forward extra fields (content script routing, etc.)
+    for k, v in extra.items():
+        body_dict[k] = v
     effective_tab_id = tab_id if tab_id is not None else _shared_tab_id
     if effective_tab_id is not None:
         body_dict["tabId"] = effective_tab_id
+    
+    # Try persistent WebSocket first (no HTTP POST overhead)
+    ws_result = _cdp_via_ws(body_dict)
+    if ws_result is not None:
+        return ws_result
+    
+    # Fall back to HTTP POST
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     for attempt in range(2):
@@ -681,6 +827,33 @@ async def list_tools() -> list[Tool]:
                 "required": ["tab_id"],
             },
         ),
+        Tool(
+            name="browser_do",
+            description="Execute multiple browser actions sequentially in ONE tool call. Each action is a dict with 'action' field and action-specific params. Supported: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text, wait. Eliminates LLM thinking time between steps.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Array of action objects, each with an 'action' field. See browser_do handler for supported actions.",
+                    },
+                },
+                "required": ["actions"],
+            },
+        ),
+        Tool(
+            name="browser_navigate_wait",
+            description="Navigate to a URL and wait until the page is fully loaded (readyState=complete). Combines navigate + wait in one tool call, saving a round-trip.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to navigate to"},
+                    "timeout": {"type": "integer", "description": "Max seconds to wait for page load (default: 15, max: 60)", "default": 15},
+                },
+                "required": ["url"],
+            },
+        ),
     ]
 
     # Auto-inject tab_id into all tools for multi-tab targeting
@@ -700,6 +873,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         if name == "browser_navigate":
             url = arguments["url"]
             result = _cdp("Page.navigate", {"url": url})
+            _invalidate_cache()
             if "error" in result:
                 return [TextContent(type="text", text=f"Error: {result['error']}")]
             return [TextContent(type="text", text=json.dumps(result.get("result", {}), indent=2))]
@@ -712,78 +886,80 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
         elif name == "browser_hover":
             selector = arguments["selector"]
-            # Find element coordinates via JS (same as click)
-            find_expr = f"""
+            result = _hermes_call("hover", selector, fallback=f"""
             (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const el = document.querySelector({_js_quote(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
                 const r = el.getBoundingClientRect();
-                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                if (r.width === 0 || r.height === 0) return {{ error: 'Element has zero size' }};
+                const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """
-            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
-            coords = _parse_result(find_result)
-            if isinstance(coords, dict) and "error" in coords:
-                return [TextContent(type="text", text=f"Error: {coords['error']}")]
-            if isinstance(coords, dict) and "x" in coords:
-                x, y = round(coords["x"]), round(coords["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-                desc = f"Hovered '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
-                return [TextContent(type="text", text=desc)]
-            return [TextContent(type="text", text=f"Unexpected: {json.dumps(coords, indent=2)}")]
-
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and value.get("ok"):
+                return [TextContent(type="text", text=f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')}) at ({value.get('x',0)},{value.get('y',0)})")]
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
+            return [TextContent(type="text", text=f"Hovered {selector}")]
         elif name == "browser_click":
             selector = arguments["selector"]
-            # Find element coordinates via JS
-            find_expr = f"""
+            # Single __hermes call — find + dispatch in one Runtime.evaluate
+            result = _hermes_call("click", selector, fallback=f"""
             (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const el = document.querySelector({_js_quote(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
                 const r = el.getBoundingClientRect();
-                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                if (r.width === 0 || r.height === 0) return {{ error: 'Element has zero size' }};
+                const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """
-            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
-            coords = _parse_result(find_result)
-            if isinstance(coords, dict) and "error" in coords:
-                return [TextContent(type="text", text=f"Error: {coords['error']}")]
-            if isinstance(coords, dict) and "x" in coords:
-                x, y = round(coords["x"]), round(coords["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                desc = f"Clicked '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
-                return [TextContent(type="text", text=desc)]
-            return [TextContent(type="text", text=f"Unexpected: {json.dumps(coords, indent=2)}")]
-
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
+            x = value.get("x", 0)
+            y = value.get("y", 0)
+            desc = f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) at ({x}, {y})"
+            return [TextContent(type="text", text=desc)]
         elif name == "browser_type":
             selector = arguments["selector"]
             text = arguments["text"]
-            # Use execCommand('insertText') for full React/Next.js compatibility
-            type_expr = f"""
+            # Single __hermes call — focus + clear + insertText in one Runtime.evaluate
+            result = _hermes_call("type", selector, text, fallback=f"""
             (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+                const el = document.querySelector({_js_quote(selector)});
+                if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
                 el.focus();
                 el.value = '';
                 el.select();
-                document.execCommand('insertText', false, {json.dumps(text)});
+                document.execCommand('insertText', false, {_js_quote(text)});
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
+                return {{ ok: true, tag: el.tagName.toLowerCase(), value_len: el.value.length }};
             }})()
-            """
-            result = _cdp("Runtime.evaluate", {"expression": type_expr, "returnByValue": True})
+            """)
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return [TextContent(type="text", text=f"Error: {value['error']}")]
             return [TextContent(type="text", text=f"Typed '{text}' into {selector}")]
-
         elif name == "browser_enter":
-            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": "Enter", "windowsVirtualKeyCode": 13})
-            _cdp("Input.dispatchKeyEvent", {"type": "char", "text": "\r"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13})
+            _hermes_call("key", "Enter", fallback="""
+            (() => {
+                const active = document.activeElement;
+                if (!active) return { error: 'No active element' };
+                active.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+                active.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+                return { ok: true };
+            })()
+            """)
             return [TextContent(type="text", text="Pressed Enter")]
-
         elif name == "browser_screenshot":
             result = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
             if "error" in result:
@@ -814,10 +990,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
         elif name == "browser_snapshot":
             full = arguments.get("full", False)
-            snapshot_js = f"""
+            # Check snapshot cache first (2s TTL)
+            cached = _get_cached_snapshot(_shared_tab_id, full)
+            if cached is not None:
+                snap = cached
+            else:
+                # Prefer __hermes.snapshot(full) — single eval vs 50 lines of inline JS
+                result = _hermes_call("snapshot", full, fallback=f"""
             (() => {{
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
                 const _shadowQueryAll = (root, sel) => {{
                     let r = [];
                     try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
@@ -866,10 +1047,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                     total: items.length,
                     visible: items.filter(i => i.visible).length,
                 }};
-                return {{ info, items }};
+                let textContent = '';
+                if ({'true' if full else 'false'}) {{
+                    textContent = (document.body ? document.body.innerText : '').substring(0, 30000);
+                }}
+                return {{ info, items, textContent }};
             }})()
-            """
-            snap = _parse_result(_cdp("Runtime.evaluate", {"expression": snapshot_js, "returnByValue": True, "awaitPromise": True}))
+            """)
+                snap = _parse_result(result)
+                _cache_snapshot(_shared_tab_id, full, snap)
             if isinstance(snap, dict) and "error" in snap:
                 return [TextContent(type="text", text=f"Snapshot error: {snap['error']}")]
             info = snap.get("info", {})
@@ -887,135 +1073,124 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             if len(items) > 60:
                 lines.append(f"  ... and {len(items) - 60} more (use browser_scroll to reveal)")
             if full:
-                text_js = "document.body.innerText.substring(0, 30000)"
-                text_content = _parse_result(_cdp("Runtime.evaluate", {"expression": text_js, "returnByValue": True}))
+                text_content = snap.get("textContent", "")
                 lines.extend(["", "--- Page Text ---", str(text_content)[:20000]])
             return [TextContent(type="text", text="\n".join(lines))]
-
         elif name == "browser_scroll":
             direction = arguments.get("direction", "down")
             amount = arguments.get("amount", 0)
-            if not amount:
-                amount_js = "Math.round(window.innerHeight * 0.6)"
-                amount = int(_parse_result(_cdp("Runtime.evaluate", {"expression": amount_js, "returnByValue": True})) or 400)
-            dx, dy = 0, 0
-            if direction == "down":
-                dy = amount
-            elif direction == "up":
-                dy = -amount
-            elif direction == "right":
-                dx = amount
-            elif direction == "left":
-                dx = -amount
-            _cdp("Runtime.evaluate", {"expression": f"window.scrollBy({{left:{dx}, top:{dy}, behavior:'smooth'}})", "returnByValue": True})
-            return [TextContent(type="text", text=f"Scrolled {direction} by {abs(dx or dy)}px")]
-
+            # Prefer __hermes.scrollBy — single eval with useful return
+            result = _hermes_call("scrollBy", direction, amount, fallback=f"""
+            (() => {{
+                const dir = {_js_quote(direction)};
+                let amt = {amount or 0};
+                if (!amt) amt = Math.round(window.innerHeight * 0.6);
+                const dx = (dir === 'right' ? amt : (dir === 'left' ? -amt : 0));
+                const dy = (dir === 'down' ? amt : (dir === 'up' ? -amt : 0));
+                window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+                return {{ direction: dir, amount: amt, scrollX: window.scrollX, scrollY: window.scrollY }};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and value.get("direction"):
+                return [TextContent(type="text", text=f"Scrolled {value.get('direction')} by {value.get('amount', '?')}px (pos: {value.get('scrollX',0)},{value.get('scrollY',0)})")]
+            return [TextContent(type="text", text=f"Scrolled {direction}")]
         elif name == "browser_wait_selector":
             selector = arguments["selector"]
             timeout = min(arguments.get("timeout", 15), 60)
             state = arguments.get("state", "visible")
-            import asyncio
-            import time as ttime
-            deadline = ttime.time() + timeout
-            while ttime.time() < deadline:
-                check_js = f"""
-                (() => {{
-                    // Shadow DOM-aware query — traverses light DOM + shadow roots recursively
-                    const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
-                    const el = _sq(document, {_js_quote(selector)})[0] || null;
-                    if (!el) return false;
-                    if ({'true' if state == 'visible' else 'false'}) {{
+            # Use _hermes_call for CS fast path (waits on JS side, no CDP round-trips)
+            if state == "attached":
+                result = _hermes_call("waitSelector", selector, timeout, "attached", fallback=f"""
+            (() => {{
+                const deadline = Date.now() + {timeout * 1000};
+                while (Date.now() < deadline) {{
+                    const el = document.querySelector({_js_quote(selector)});
+                    if (el) return {{ ok: true }};
+                }}
+                return {{ error: 'Timeout waiting for: ' + {_js_quote(selector)}, timeout_seconds: {timeout} }};
+            }})()
+            """)
+            else:
+                result = _hermes_call("waitSelector", selector, timeout, "visible", fallback=f"""
+            (() => {{
+                const deadline = Date.now() + {timeout * 1000};
+                while (Date.now() < deadline) {{
+                    const el = document.querySelector({_js_quote(selector)});
+                    if (el) {{
                         const r = el.getBoundingClientRect();
-                        return r.width > 0 && r.height > 0;
+                        if (r.width > 0 && r.height > 0) return {{ ok: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }};
                     }}
-                    return true;
-                }})()
-                """
-                found = _parse_result(_cdp("Runtime.evaluate", {"expression": check_js, "returnByValue": True}))
-                if found:
-                    return [TextContent(type="text", text=f"✅ Selector '{selector}' matched after {timeout - (deadline - ttime.time()):.1f}s")]
-                await asyncio.sleep(0.5)
-            return [TextContent(type="text", text=f"⏱️ Timed out ({timeout}s) waiting for '{selector}'")]
-
+                }}
+                return {{ error: 'Timeout waiting for: ' + {_js_quote(selector)}, timeout_seconds: {timeout} }};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"⏱️ Timed out ({timeout}s) waiting for '{selector}'")]
+            return [TextContent(type="text", text=f"✅ Selector '{selector}' matched")]
         elif name == "browser_click_text":
             text_query = arguments["text"]
             tag_filter = arguments.get("tag", "")
-            click_js = f"""
+            # Prefer __hermes.clickText — find + click in one call (via content script)
+            result = _hermes_call("clickText", text_query, tag_filter, fallback=f"""
             (() => {{
                 const searchText = {_js_quote(text_query)}.toLowerCase();
                 const tag = {_js_quote(tag_filter)};
-                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const all = _shadowQueryAll(document, 'a, button, span, label, div[role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], select, [onclick], [tabindex]');
+                const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                const all = _sq(document, 'a, button, span, label, div[role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], select, [onclick], [tabindex]');
                 for (const el of all) {{
                     if (tag && el.tagName.toLowerCase() !== tag) continue;
                     const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
                     if (txt.includes(searchText)) {{
                         const r = el.getBoundingClientRect();
                         if (r.width === 0 || r.height === 0) continue;
-                        return {{ x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                        const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                        el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
                     }}
                 }}
                 return {{ error: 'No element found with text: ' + searchText }};
             }})()
-            """
-            ct = _parse_result(_cdp("Runtime.evaluate", {"expression": click_js, "returnByValue": True}))
-            if isinstance(ct, dict) and "error" in ct:
-                return [TextContent(type="text", text=f"Error: {ct['error']}")]
-            if isinstance(ct, dict) and "x" in ct:
-                x, y = round(ct["x"]), round(ct["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                return [TextContent(type="text", text=f"Clicked '{ct.get('text','?')}' ({ct.get('tag','?')}) by text")]
-            return [TextContent(type="text", text=f"Unexpected: {json.dumps(ct, indent=2)}")]
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
+            return [TextContent(type="text", text=f"Clicked '{value.get('text','?')}' ({value.get('tag','?')}) by text")]
 
         elif name == "browser_fill_by_label":
             label = arguments["label"]
             text = arguments["text"]
-            fill_js = f"""
+            # Prefer __hermes.fillByLabel — single eval with fallback
+            result = _hermes_call("fillByLabel", label, text, fallback=f"""
             (() => {{
                 const search = {_js_quote(label)}.toLowerCase();
-                // Shadow DOM-aware helpers
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const _shadowQuery = (root, sel) => _shadowQueryAll(root, sel)[0] || null;
-                // Try label association (light + shadow DOM)
-                const labels = _shadowQueryAll(document, 'label');
+                const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
+                const labels = _sq(document, 'label');
                 let input = null;
                 for (const lbl of labels) {{
                     const txt = (lbl.textContent||'').trim().toLowerCase();
                     if (txt.includes(search)) {{
                         const forId = lbl.getAttribute('for');
                         if (forId) {{
-                            input = document.getElementById(forId) || _shadowQuery(document, '#' + CSS.escape(forId)) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
+                            input = document.getElementById(forId) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
                         }} else {{
-                            input = lbl.querySelector('input, textarea, select') || _shadowQuery(lbl, 'input, textarea, select');
+                            input = lbl.querySelector('input, textarea, select');
                         }}
                         if (input) break;
                     }}
                 }}
-                // Try placeholder (shadow-aware)
                 if (!input) {{
-                    const allInputs = _shadowQueryAll(document, 'input, textarea');
+                    const allInputs = _sq(document, 'input, textarea');
                     for (const el of allInputs) {{
                         const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
                         if (ph.toLowerCase().includes(search)) {{ input = el; break; }}
                     }}
                 }}
-                // Try name attribute (shadow-aware)
                 if (!input) {{
-                    const allInputs = _shadowQueryAll(document, 'input, textarea');
+                    const allInputs = _sq(document, 'input, textarea');
                     for (const el of allInputs) {{
                         if ((el.getAttribute('name') || '').toLowerCase().includes(search)) {{ input = el; break; }}
                     }}
@@ -1029,52 +1204,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: input.tagName, type: input.type || '', value_len: input.value.length }};
             }})()
-            """
-            fill_result = _parse_result(_cdp("Runtime.evaluate", {"expression": fill_js, "returnByValue": True}))
+            """)
+            fill_result = _parse_result(result)
             if isinstance(fill_result, dict) and "error" in fill_result:
                 return [TextContent(type="text", text=f"Error: {fill_result['error']}")]
             return [TextContent(type="text", text=f"Filled '{label}' with '{text}'")]
-
         elif name == "browser_get_text":
-            text_js = "document.body.innerText.substring(0, 50000)"
-            page_text = str(_parse_result(_cdp("Runtime.evaluate", {"expression": text_js, "returnByValue": True})))
+            result = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0, 50000) : ''")
+            page_text = str(_parse_result(result))
             return [TextContent(type="text", text=page_text[:40000])]
-
         elif name == "browser_screenshot_annotated":
-            # Get interactive elements with their center coordinates
-            annotate_js = f"""
-            (() => {{
-                const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const all = _shadowQueryAll(document, selectors.join(','));
-                const seen = new Set();
-                const items = [];
-                let idx = 0;
-                all.forEach(el => {{
-                    if (seen.has(el)) return;
-                    seen.add(el);
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return;
-                    if (r.top > window.innerHeight || r.bottom < 0) return;  // off-screen
-                    idx++;
-                    const txt = (el.textContent||'').trim().substring(0, 40);
-                    const role = el.getAttribute('role') || '';
-                    const label = txt || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || role || el.tagName;
-                    items.push({{ ref: idx, text: label.substring(0, 30), x: Math.round(r.x + r.width/2), y: Math.round(r.top + 8), left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }});
-                }});
-                return items.slice(0, 50);
-            }})()
-            """
-            annotations = _parse_result(_cdp("Runtime.evaluate", {"expression": annotate_js, "returnByValue": True}))
-            if not isinstance(annotations, list) or len(annotations) == 0:
-                return [TextContent(type="text", text="No interactive elements found on screen")]
+            # Get interactive elements via __hermes.snapshot (avoids inline JS through CDP)
+            annotate_result = _hermes_call("snapshot", False)
+            snap = _parse_result(annotate_result)
+            if isinstance(snap, dict) and "error" in snap:
+                return [TextContent(type="text", text=f"Snapshot error: {snap['error']}")]
+            # Filter to visible items only for annotation
+            all_items = snap.get("items", [])
+            annotations = [it for it in all_items if it.get("visible") and it.get("x")][:50]
+            if not annotations:
+                return [TextContent(type="text", text="No visible interactive elements found")]
 
             # Take screenshot
             shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
@@ -1090,64 +1239,44 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
                 draw = ImageDraw.Draw(img)
 
-                # Try to load a nicer font, fall back to default
                 font_size = max(14, img.width // 80)
                 try:
                     font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
                 except (IOError, OSError):
                     font = ImageFont.load_default()
 
-                # Draw a semi-transparent overlay layer for label backgrounds
                 overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
                 overlay_draw = ImageDraw.Draw(overlay)
 
-                for a in annotations:
-                    ref = str(a.get("ref", "?"))
+                for idx, a in enumerate(annotations):
+                    ref = str(idx + 1)
                     cx, cy = a.get("x", 0), a.get("y", 0)
-                    left = a.get("left", cx - 10)
-                    top = a.get("top", cy - 10)
-
-                    # Measure text
+                    label = a.get("text") or a.get("aria_label") or a.get("placeholder") or a.get("name") or a.get("role") or a.get("tag", "?")
                     bbox = draw.textbbox((0, 0), f"[{ref}]", font=font)
                     tw = bbox[2] - bbox[0]
                     th = bbox[3] - bbox[1]
-
-                    # Label background
-                    label_x = left
-                    label_y = top - th - 4
-                    padding = 4
+                    label_x = cx - 10
+                    label_y = cy - th - 4
                     overlay_draw.rectangle(
-                        [label_x - padding, label_y - padding, label_x + tw + padding, label_y + th + padding],
+                        [label_x - 4, label_y - 4, label_x + tw + 4, label_y + th + 4],
                         fill=(255, 200, 0, 220),
                     )
-                    # Draw text label in black
-                    overlay_draw.text(
-                        (label_x, label_y),
-                        f"[{ref}]",
-                        fill=(0, 0, 0, 220),
-                        font=font,
+                    overlay_draw.text((label_x, label_y), f"[{ref}]", fill=(0, 0, 0, 220), font=font)
+                    overlay_draw.rectangle(
+                        [cx - a.get("w", 10)//2, cy - a.get("h", 10)//2, cx + a.get("w", 10)//2, cy + a.get("h", 10)//2],
+                        outline=(255, 200, 0, 220), width=2,
                     )
-                    # Highlight rectangle around element
-                    if a.get("w") and a.get("h"):
-                        overlay_draw.rectangle(
-                            [left, top, left + a["w"], top + a["h"]],
-                            outline=(255, 200, 0, 220),
-                            width=2,
-                        )
 
                 img = Image.alpha_composite(img, overlay)
-
-                # Convert back to RGB for PNG encoding
                 img_rgb = img.convert("RGB")
-
                 buf = io.BytesIO()
                 img_rgb.save(buf, format="PNG")
                 annotated_b64 = base64.b64encode(buf.getvalue()).decode()
 
-                # Build minimal element listing for context
                 lines = ["Interactive elements:"]
-                for a in annotations:
-                    lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
+                for idx, a in enumerate(annotations):
+                    label = a.get("text") or a.get("aria_label") or a.get("placeholder") or a.get("name") or a.get("role") or a.get("tag", "?")
+                    lines.append(f"  [{idx+1}] \"{label[:50]}\" @({a['x']},{a['y']})")
 
                 return [
                     ImageContent(type="image", data=annotated_b64, mimeType="image/png"),
@@ -1158,14 +1287,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
         elif name == "browser_key":
             key = arguments.get("key", "Escape")
-            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
+            result = _hermes_call("key", key, fallback=f"""
+            (() => {{
+                const k = {_js_quote(key)};
+                const active = document.activeElement;
+                if (!active) return {{ error: 'No active element', key: k }};
+                const keyMap = {{ 'Enter': 13, 'Escape': 27, 'Tab': 9, 'Backspace': 8, 'Delete': 46, 'ArrowDown': 40, 'ArrowUp': 38, 'ArrowLeft': 37, 'ArrowRight': 39, 'Home': 36, 'End': 35, 'PageUp': 33, 'PageDown': 34 }};
+                const kc = keyMap[k] || k.charCodeAt(0) || 0;
+                active.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, cancelable: true, key: k, code: k, keyCode: kc, which: kc }}));
+                active.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, cancelable: true, key: k, code: k, keyCode: kc, which: kc }}));
+                return {{ ok: true, key: k }};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and value.get("ok"):
+                return [TextContent(type="text", text=f"Pressed {key}")]
             return [TextContent(type="text", text=f"Pressed {key}")]
-
         elif name == "browser_select_option":
             selector = arguments["selector"]
             text = arguments["text"]
-            select_js = f"""
+            # Prefer __hermes.selectOption — single eval (via content script)
+            result = _hermes_call("selectOption", selector, text, fallback=f"""
             (() => {{
                 const select = document.querySelector({json.dumps(selector)});
                 if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
@@ -1179,15 +1321,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 select.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
             }})()
-            """
-            result = _cdp("Runtime.evaluate", {"expression": select_js, "returnByValue": True})
+            """)
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return [TextContent(type="text", text=f"Error: {value['error']}")]
-            return [TextContent(type="text", text=f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'")]
+            return [TextContent(type="text", text=f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}) in '{selector}'")]
 
         elif name == "browser_back":
-            result = _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+            _hermes_call("historyBack", fallback="window.history.back()")
+            _invalidate_cache()
             return [TextContent(type="text", text="Navigated back")]
 
         elif name == "browser_console":
@@ -1420,59 +1562,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_refresh":
             hard = arguments.get("hard_reload", False)
             result = _cdp("Page.reload", {"ignoreCache": hard})
+            _invalidate_cache()
             if "error" in result:
                 return [TextContent(type="text", text=f"Error: {result['error']}")]
             return [TextContent(type="text", text="🔄 Page reloaded" + (" (hard)" if hard else ""))]
 
         elif name == "browser_forward":
-            _cdp("Runtime.evaluate", {"expression": "window.history.forward()"})
+            _hermes_call("historyForward", fallback="window.history.forward()")
+            _invalidate_cache()
             return [TextContent(type="text", text="Navigated forward")]
 
         elif name == "browser_get_title":
-            title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
-            return [TextContent(type="text", text=f"📄 {title}")]
-
+            result = _hermes_call("docInfo", fallback='({ title: document.title, url: location.href })')
+            value = _parse_result(result)
+            if isinstance(value, dict):
+                title = value.get("title", "?")
+                url = value.get("url", "?")
+                return [TextContent(type="text", text=f"📄 {title}\n🌐 {url}")]
+            return [TextContent(type="text", text=str(value)[:500])]
         elif name == "browser_find":
             query = arguments["query"]
             css_selector = arguments.get("selector", "")
             max_results = min(arguments.get("max_results", 20), 50)
-            find_js = f"""
+            # Prefer __hermes.find — does shadow-DOM search + matching in one eval
+            result = _hermes_call("find", query, fallback=f"""
             (() => {{
-                const query = {_js_quote(query)}.toLowerCase();
+                const q = {_js_quote(query)}.toLowerCase();
                 const scope = {_js_quote(css_selector)};
                 const maxR = {max_results};
                 const root = scope ? document.querySelector(scope) : document.body;
-                if (!root) return {{ error: 'Scope selector not found: ' + scope }};
+                if (!root) return {{ error: 'Scope not found: ' + scope }};
                 const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
-                // Shadow DOM-aware queryAll
                 const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
                 const all = _sq(root, selectors.join(','));
                 const seen = new Set();
                 const results = [];
                 let idx = 0;
-                all.forEach(el => {{
-                    if (seen.has(el)) return;
+                for (const el of all) {{
+                    if (seen.has(el)) continue;
                     seen.add(el);
                     const txt = (el.textContent||'').trim().toLowerCase();
-                    if (!txt.includes(query)) return;
-                    if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+                    if (!txt.includes(q)) continue;
+                    if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
                     idx++;
+                    if (idx > maxR) break;
                     const r = el.getBoundingClientRect();
-                    results.push({{
-                        ref: 'e' + idx,
-                        tag: el.tagName.toLowerCase(),
-                        text: (el.textContent||'').trim().substring(0, 100),
-                        x: Math.round(r.x + r.width/2),
-                        y: Math.round(r.y + r.height/2),
-                        w: Math.round(r.width),
-                        h: Math.round(r.height),
-                        visible: r.top < window.innerHeight && r.bottom > 0,
-                    }});
-                }});
-                return {{ count: results.length, results: results.slice(0, maxR) }};
+                    results.push({{ ref: 'e' + idx, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 100), x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
+                }}
+                return {{ count: results.length, results }};
             }})()
-            """
-            find_result = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True, "awaitPromise": True}))
+            """)
+            find_result = _parse_result(result)
             if isinstance(find_result, dict) and "error" in find_result:
                 return [TextContent(type="text", text=f"Find error: {find_result['error']}")]
             count = find_result.get("count", 0)
@@ -1484,7 +1624,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 vis = "" if it["visible"] else "⬆"
                 lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{it['text'][:70]}\" @({it['x']},{it['y']})")
             return [TextContent(type="text", text="\n".join(lines))]
-
         elif name == "browser_block_patterns":
             patterns = arguments.get("patterns", [])
             if not isinstance(patterns, list):
@@ -1722,64 +1861,84 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
         elif name == "browser_form_fill":
             fields = arguments["fields"]
-            results = []
-            import time as _tf_mod
-            for identifier, value in fields.items():
-                value_str = str(value)
-                # Try as CSS selector first (if it looks like one)
-                if identifier.startswith("input[") or identifier.startswith("#") or identifier.startswith(".") or identifier.startswith("[") or identifier.startswith(":") or identifier.count(" ") > 0:
-                    fill_js = f"""
-                    (() => {{
-                        const el = document.querySelector({json.dumps(identifier)});
-                        if (!el) return {{ error: 'Not found: ' + {json.dumps(identifier)} }};
-                        if (el.tagName === 'SELECT') {{
-                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
-                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change', {{bubbles:true}})); return {{ok:true, tag:'SELECT'}}; }}
-                            return {{error: 'Option not found'}};
-                        }}
-                        el.focus(); el.value = ''; el.select();
-                        document.execCommand('insertText', false, {json.dumps(value_str)});
-                        el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles:true}}));
-                        return {{ok:true, tag: el.tagName}};
-                    }})()
-                    """
-                else:
-                    fill_js = f"""
-                    (() => {{
-                        const s = {json.dumps(identifier)}.toLowerCase();
-                        const _shadowQueryAll = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_shadowQueryAll(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_shadowQueryAll(c,sel)); return z; }};
-                        let el = null;
-                        for (const lbl of _shadowQueryAll(document, 'label')) {{
-                            if ((lbl.textContent||'').trim().toLowerCase().includes(s)) {{
-                                const fid = lbl.getAttribute('for');
+            result = _hermes_call("formFill", fields, fallback=f"""
+            (() => {{
+                var fields = {json.dumps(fields)};
+                var errors = [];
+                var completed = 0;
+                var keys = Object.keys(fields);
+                var _shadowQueryAll = function(r, sel) {{ var z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_shadowQueryAll(r.shadowRoot,sel)); for(var c=0;c<(r.children||[]).length;c++) z=z.concat(_shadowQueryAll(r.children[c],sel)); return z; }};
+                for (var i = 0; i < keys.length; i++) {{
+                    var identifier = keys[i];
+                    var value = fields[identifier];
+                    var valueStr = String(value);
+                    var isSelector = identifier.charCodeAt(0) === 35 || identifier.charCodeAt(0) === 46 || identifier.charCodeAt(0) === 91 || identifier.charCodeAt(0) === 58 || identifier.indexOf(' ') > 0 || identifier.indexOf('input[') === 0;
+                    var el = null;
+                    if (isSelector) {{
+                        el = document.querySelector(identifier);
+                    }} else {{
+                        var s = identifier.toLowerCase();
+                        // Label match
+                        var labels = _shadowQueryAll(document, 'label');
+                        for (var li = 0; li < labels.length; li++) {{
+                            var lbl = labels[li];
+                            if ((lbl.textContent||'').trim().toLowerCase().indexOf(s) !== -1) {{
+                                var fid = lbl.getAttribute('for');
                                 if (fid) el = document.getElementById(fid);
                                 else el = lbl.querySelector('input,textarea,select');
                                 if (el) break;
                             }}
                         }}
-                        if (!el) {{ for (const e of _shadowQueryAll(document, 'input,textarea')) {{ const ph = e.getAttribute('placeholder')||e.getAttribute('aria-label')||''; if(ph.toLowerCase().includes(s)){{el=e;break;}} }} }}
-                        if (!el) {{ for (const e of _shadowQueryAll(document, 'input,textarea')) {{ if((e.getAttribute('name')||'').toLowerCase().includes(s)){{el=e;break;}} }} }}
-                        if (!el) return {{error:'Not found: '+s}};
-                        if (el.tagName === 'SELECT') {{
-                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
-                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,tag:'SELECT'}}; }}
-                            return {{error:'Option not found'}};
+                        // Placeholder / aria-label match
+                        if (!el) {{
+                            var allInp = _shadowQueryAll(document, 'input,textarea');
+                            for (var pi = 0; pi < allInp.length; pi++) {{
+                                var ph = allInp[pi].getAttribute('placeholder') || allInp[pi].getAttribute('aria-label') || '';
+                                if (ph.toLowerCase().indexOf(s) !== -1) {{ el = allInp[pi]; break; }}
+                            }}
                         }}
-                        el.focus(); el.value = ''; el.select();
-                        document.execCommand('insertText', false, {json.dumps(value_str)});
-                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
-                        return {{ok:true, tag:el.tagName}};
-                    }})()
-                    """
-                r = _parse_result(_cdp("Runtime.evaluate", {"expression": fill_js, "returnByValue": True}))
-                if isinstance(r, dict) and "error" in r:
-                    results.append({"field": identifier, "error": r["error"]})
-                else:
-                    results.append({"field": identifier, "set": True})
-                _tf_mod.sleep(0.05)  # small delay between fills
-            return [TextContent(type="text", text=json.dumps({"results": results, "filled": sum(1 for r in results if r.get("set")), "failed": sum(1 for r in results if "error" in r)}, indent=2))]
+                        // Name match
+                        if (!el) {{
+                            var allInp2 = _shadowQueryAll(document, 'input,textarea');
+                            for (var ni = 0; ni < allInp2.length; ni++) {{
+                                if ((allInp2[ni].getAttribute('name')||'').toLowerCase().indexOf(s) !== -1) {{ el = allInp2[ni]; break; }}
+                            }}
+                        }}
+                    }}
+                    if (!el) {{
+                        errors.push({{field: identifier, error: 'Field not found'}});
+                        continue;
+                    }}
+                    if (el.tagName === 'SELECT') {{
+                        var opts = Array.from(el.options);
+                        var found = false;
+                        for (var j = 0; j < opts.length; j++) {{
+                            if (opts[j].value === valueStr || opts[j].text.indexOf(valueStr) !== -1) {{
+                                el.value = opts[j].value;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                completed++;
+                                found = true;
+                                break;
+                            }}
+                        }}
+                        if (!found) errors.push({{field: identifier, error: 'Option not found'}});
+                        continue;
+                    }}
+                    el.focus(); el.value = ''; el.select();
+                    document.execCommand('insertText', false, valueStr);
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    completed++;
+                }}
+                return {{completed: completed, errors: errors}};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return [TextContent(type="text", text=f"Error: {value['error']}")]
+            if isinstance(value, dict):
+                return [TextContent(type="text", text=json.dumps(value, indent=2))]
+            return [TextContent(type="text", text=str(value))]
 
         elif name == "browser_create_tab":
             url = arguments.get("url", "about:blank")
@@ -1811,6 +1970,104 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
             except Exception as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
+
+        elif name == "browser_do":
+            """Execute multiple browser actions sequentially in ONE tool call.
+            Each action is a dict with an 'action' field and action-specific params.
+            Supported actions: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text.
+            Eliminates LLM thinking time between steps."""
+            actions = arguments.get("actions", [])
+            if not actions or not isinstance(actions, list):
+                return [TextContent(type="text", text="Error: 'actions' must be a non-empty array")]
+            results = []
+            for i, action in enumerate(actions):
+                act = action.get("action", "")
+                try:
+                    if act == "navigate":
+                        r = _cdp("Page.navigate", {"url": action["url"]})
+                        _invalidate_cache()
+                        results.append(f"[{i+1}] Navigated to {action.get('url', '?')}")
+                    elif act == "wait_selector":
+                        sel = action["selector"]
+                        to = min(action.get("timeout", 10), 60)
+                        ws_r = _hermes_call("waitSelector", sel, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                        r = _parse_result(ws_r)
+                        if isinstance(r, dict) and r.get("ok"):
+                            results.append(f"[{i+1}] Wait: '{sel}' visible")
+                        else:
+                            results.append(f"[{i+1}] Wait timed out: '{sel}'")
+                    elif act == "click":
+                        sel = action["selector"]
+                        click_result = _hermes_call("click", sel)
+                        v = _parse_result(click_result)
+                        if isinstance(v, dict) and v.get("ok"):
+                            results.append(f"[{i+1}] Clicked '{sel}'")
+                        else:
+                            results.append(f"[{i+1}] Click failed: {v}")
+                    elif act == "type":
+                        sel = action["selector"]
+                        txt = action["text"]
+                        _hermes_call("type", sel, txt)
+                        results.append(f"[{i+1}] Typed into '{sel}'")
+                    elif act == "enter":
+                        _hermes_call("key", "Enter")
+                        results.append(f"[{i+1}] Pressed Enter")
+                    elif act == "scroll":
+                        d = action.get("direction", "down")
+                        a = action.get("amount", 0)
+                        _hermes_call("scrollBy", d, a)
+                        results.append(f"[{i+1}] Scrolled {d}")
+                    elif act == "back":
+                        _hermes_call("historyBack", fallback="window.history.back()")
+                        _invalidate_cache()
+                        results.append(f"[{i+1}] Navigated back")
+                    elif act == "eval":
+                        expr = action["expression"]
+                        r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
+                        results.append(f"[{i+1}] eval: {str(r)[:200]}")
+                    elif act == "snapshot":
+                        full = action.get("full", False)
+                        sn_r = _hermes_call("snapshot", full)
+                        sn_v = _parse_result(sn_r)
+                        if isinstance(sn_v, dict):
+                            info = sn_v.get("info", {})
+                            results.append(f"[{i+1}] Snapshot: {info.get('visible',0)}/{info.get('total',0)} elements on {info.get('title','?')}")
+                        else:
+                            results.append(f"[{i+1}] Snapshot error")
+                    elif act == "get_text":
+                        gt_r = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0,10000) : ''")
+                        txt = str(_parse_result(gt_r))[:300]
+                        results.append(f"[{i+1}] Text: {txt}")
+                    elif act == "wait":
+                        import asyncio
+                        await asyncio.sleep(min(action.get("seconds", 1), 10))
+                        results.append(f"[{i+1}] Waited {action.get('seconds', 1)}s")
+                    else:
+                        results.append(f"[{i+1}] Unknown action: {act}")
+                except Exception as e:
+                    results.append(f"[{i+1}] Error in '{act}': {e}")
+            summary = "\n".join(results)
+            return [TextContent(type="text", text=f"✅ browser_do completed {len(actions)} actions:\n{summary}")]
+
+        elif name == "browser_navigate_wait":
+            """Navigate to a URL and wait until the page is ready.
+            Combines navigate + wait_for_navigation + ready-state poll in one tool call."""
+            url = arguments["url"]
+            timeout = min(arguments.get("timeout", 15), 60)
+            nav_result = _cdp("Page.navigate", {"url": url})
+            _invalidate_cache()
+            if "error" in nav_result:
+                return [TextContent(type="text", text=f"Error: {nav_result['error']}")]
+            import time as _t
+            deadline = _t.time() + timeout
+            while _t.time() < deadline:
+                ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
+                if isinstance(ready, dict):
+                    rs = ready.get("readyState", "")
+                    if rs == "complete":
+                        return [TextContent(type="text", text=f"✅ Loaded: {ready.get('title', '?')}\n🌐 {url}")]
+                _t.sleep(0.3)
+            return [TextContent(type="text", text=f"⏱️ Page did not finish loading within {timeout}s: {url}")]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
