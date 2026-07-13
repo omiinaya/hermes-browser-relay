@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.0 (2026-07-13)
+
+### Changed
+- **Refactored `call_tool` (1,296-line if/elif chain) into 46 per-tool handler functions** — each tool handler is now a standalone `_handle_<name>()` async function. `call_tool` is now a 10-line dispatch lookup via `HANDLER_MAP`.
+- **Refactored `list_tools` (510-line function) into `TOOL_DEFS` dict + 8-line thin wrapper** — tool definitions (name, description, inputSchema) are now a module-level dict. Much easier to add/modify tools.
+- **Content-script mutation observer debounced** — previously used a simple throttle (first mutation fires immediately, blocks 500ms). Now uses proper debouncing: waits 250ms for mutations to settle before firing `page_updated` event. Reduces event count on SPA navigations and dynamic pages while preserving final state.
+- **Plugin and MCP server now share `TOOL_DEFS` pattern** — tool descriptions are sourced from the same definitions.
+
+### Added
+- **MCP server test suite** — 24 new tests covering tool definitions, handler dispatch, navigate/eval/snapshot/do/screenshot handlers with mocked CDP layer, and helper function integrity. Run with `pytest mcp-server/tests/`.
+
 ## v2.2.0 (2026-07-12)
 
 ### Fixed
