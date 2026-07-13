@@ -154,26 +154,53 @@ _capture_opener = urllib.request.build_opener()
 # ---------------------------------------------------------------------------
 _mcp_ws = None  # websockets.sync.client connection to ws://host:9223/mcp-ws
 
+# Circuit breaker for WS reconnection
+_ws_failures = 0        # consecutive WS failures
+_last_ws_ok = 0.0       # timestamp of last successful WS operation
+_ws_circuit_open_until = 0.0  # skip WS attempts until this time
+_WS_BREAK_THRESHOLD = 3      # consecutive failures before circuit opens
+_WS_RETRY_AFTER = 30.0       # seconds to wait before trying again
+
 
 def _ensure_mcp_ws() -> bool:
     """Connect or reconnect to the relay's /mcp-ws endpoint.
+    Uses a circuit breaker — if WS fails 3x in a row, skip attempts
+    for 30s to avoid blocking tool calls with dead-connection timeouts.
     Returns True if connected and healthy.
     """
-    global _mcp_ws
+    global _mcp_ws, _ws_failures, _last_ws_ok, _ws_circuit_open_until
+    now = time.time()
+
+    # Circuit breaker: skip WS if it's been failing repeatedly
+    if _ws_circuit_open_until > now:
+        return False
+
     if _mcp_ws is not None:
+        # Only ping if > 10s since last success — avoids 5s timeout on dead conn
+        if _last_ws_ok > 0 and now - _last_ws_ok < 10.0:
+            return True
         try:
-            _mcp_ws.ping()
+            _mcp_ws.ping(timeout=1)  # short timeout — don't block tool calls
+            _last_ws_ok = now
+            _ws_failures = 0
             return True
         except Exception:
-            # Connection lost, will reconnect
             _mcp_ws = None
 
+    # Try connecting
     try:
         ws_url = CDP_SERVER.replace("http://", "ws://").replace("https://", "wss://") + "/mcp-ws"
-        _mcp_ws = websockets.sync.client.connect(ws_url, open_timeout=5)
+        _mcp_ws = websockets.sync.client.connect(ws_url, open_timeout=3)
+        _last_ws_ok = time.time()
+        _ws_failures = 0
+        _ws_circuit_open_until = 0.0
         return True
     except Exception:
         _mcp_ws = None
+        _ws_failures += 1
+        if _ws_failures >= _WS_BREAK_THRESHOLD:
+            _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
+            print(f"[ws] Circuit opened: {_WS_RETRY_AFTER}s cooldown ({_ws_failures} failures)", flush=True)
         return False
 
 
@@ -181,17 +208,23 @@ def _cdp_via_ws(body_dict: dict) -> dict | None:
     """Send CDP command via persistent WebSocket.
     Returns parsed response dict on success, None on failure (triggers HTTP fallback).
     """
-    global _mcp_ws
+    global _mcp_ws, _ws_failures, _last_ws_ok
     if not _ensure_mcp_ws():
         return None
 
     try:
         _mcp_ws.send(json.dumps(body_dict))
         resp = _mcp_ws.recv(timeout=body_dict.get("timeout", CDP_TIMEOUT) + 5)
-        return json.loads(resp)
+        result = json.loads(resp)
+        _last_ws_ok = time.time()
+        _ws_failures = 0
+        return result
     except Exception:
-        # Connection lost — will reconnect on next call
         _mcp_ws = None
+        _ws_failures += 1
+        if _ws_failures >= _WS_BREAK_THRESHOLD:
+            _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
+            print(f"[ws] Circuit opened: {_WS_RETRY_AFTER}s cooldown ({_ws_failures} failures)", flush=True)
         return None
 
 
@@ -2021,6 +2054,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                         _hermes_call("historyBack", fallback="window.history.back()")
                         _invalidate_cache()
                         results.append(f"[{i+1}] Navigated back")
+                    elif act == "forward":
+                        _hermes_call("historyForward", fallback="window.history.forward()")
+                        _invalidate_cache()
+                        results.append(f"[{i+1}] Navigated forward")
                     elif act == "eval":
                         expr = action["expression"]
                         r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
