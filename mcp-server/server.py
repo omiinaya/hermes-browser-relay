@@ -2007,7 +2007,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
         elif name == "browser_do":
             """Execute multiple browser actions sequentially in ONE tool call.
             Each action is a dict with an 'action' field and action-specific params.
-            Supported actions: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text.
+            Supported actions: navigate, navigate_wait, click, type, snapshot, wait_selector, eval, scroll, enter, back, forward, get_text, wait.
             Eliminates LLM thinking time between steps."""
             actions = arguments.get("actions", [])
             if not actions or not isinstance(actions, list):
@@ -2020,6 +2020,31 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                         r = _cdp("Page.navigate", {"url": action["url"]})
                         _invalidate_cache()
                         results.append(f"[{i+1}] Navigated to {action.get('url', '?')}")
+                    elif act == "navigate_wait":
+                        url = action["url"]
+                        to = min(action.get("timeout", 15), 60)
+                        r = _cdp("Page.navigate", {"url": url})
+                        _invalidate_cache()
+                        import time as _nwt
+                        deadline = _nwt.time() + to
+                        title = "?"
+                        while _nwt.time() < deadline:
+                            ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
+                            if isinstance(ready, dict):
+                                title = ready.get("title", "?")
+                                if ready.get("readyState") == "complete":
+                                    break
+                            _nwt.sleep(0.3)
+                        wait_for = action.get("wait_for")
+                        if wait_for:
+                            ws_r = _hermes_call("waitSelector", wait_for, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(wait_for)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(wait_for)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                            ws_v = _parse_result(ws_r)
+                            if isinstance(ws_v, dict) and ws_v.get("ok"):
+                                results.append(f"[{i+1}] Navigate-wait: '{title}' loaded, '{wait_for}' visible")
+                            else:
+                                results.append(f"[{i+1}] Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
+                        else:
+                            results.append(f"[{i+1}] Navigate-wait: '{title}' loaded")
                     elif act == "wait_selector":
                         sel = action["selector"]
                         to = min(action.get("timeout", 10), 60)
