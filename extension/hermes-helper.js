@@ -287,36 +287,44 @@
 
   // ──────────────────────────────────────────────────────────────────────────
   // Wait for selector — poll until element exists (or timeout)
+  // Uses rAF-based async polling to avoid locking the browser main thread.
+  // Returns a Promise when called with async dispatch; OK for sync calls too.
   // ──────────────────────────────────────────────────────────────────────────
   H.waitSelector = function(selector, timeout, state) {
     timeout = timeout || 10;
     state = state || 'visible';
     const deadline = Date.now() + timeout * 1000;
-    while (Date.now() < deadline) {
+    const poll = function(resolve) {
       const el = document.querySelector(selector);
       if (el) {
+        const r = el.getBoundingClientRect();
         if (state === 'attached') {
-          const r = el.getBoundingClientRect();
-          return {
+          resolve({
             ok: true,
             tag: el.tagName.toLowerCase(),
             x: Math.round(r.x + r.width/2),
             y: Math.round(r.y + r.height/2),
-          };
+          });
+          return;
         }
-        const r = el.getBoundingClientRect();
         const visible = r.width > 0 && r.height > 0 && r.top < window.innerHeight && r.bottom > 0;
         if (visible) {
-          return {
+          resolve({
             ok: true,
             tag: el.tagName.toLowerCase(),
             x: Math.round(r.x + r.width/2),
             y: Math.round(r.y + r.height/2),
-          };
+          });
+          return;
         }
       }
-    }
-    return { error: 'Timeout waiting for: ' + selector, timeout_seconds: timeout };
+      if (Date.now() >= deadline) {
+        resolve({ error: 'Timeout waiting for: ' + selector, timeout_seconds: timeout });
+        return;
+      }
+      requestAnimationFrame(function() { poll(resolve); });
+    };
+    return new Promise(function(resolve) { poll(resolve); });
   };
 
   // ──────────────────────────────────────────────────────────────────────────

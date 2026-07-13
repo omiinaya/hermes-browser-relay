@@ -2022,16 +2022,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                         to = min(action.get("timeout", 15), 60)
                         r = _cdp("Page.navigate", {"url": url})
                         _invalidate_cache()
-                        import time as _nwt
-                        deadline = _nwt.time() + to
+                        import asyncio as _nwt_asyncio
+                        import time as _nwt_tm
+                        deadline = _nwt_tm.time() + to
                         title = "?"
-                        while _nwt.time() < deadline:
+                        while _nwt_tm.time() < deadline:
                             ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
                             if isinstance(ready, dict):
                                 title = ready.get("title", "?")
                                 if ready.get("readyState") == "complete":
                                     break
-                            _nwt.sleep(0.3)
+                            await _nwt_asyncio.sleep(0.3)
                         wait_for = action.get("wait_for")
                         if wait_for:
                             ws_r = _hermes_call("waitSelector", wait_for, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(wait_for)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(wait_for)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
@@ -2153,6 +2154,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
             _invalidate_cache()
             if "error" in nav_result:
                 return [TextContent(type="text", text=f"Error: {nav_result['error']}")]
+            import asyncio as _asyncio
             import time as _t
             deadline = _t.time() + timeout
             while _t.time() < deadline:
@@ -2177,10 +2179,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
                                 vis = "" if it["visible"] else "⬆"
                                 label = it["text"] or it["placeholder"] or it.get("aria_label", "") or it["name"] or it["href"] or it["role"]
                                 lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
-                            if len(items) > 50:
-                                lines.append(f"  ... and {len(items) - 50} more")
+                            if len(items) > 60:
+                                lines.append(f"  ... and {len(items) - 60} more")
                         return [TextContent(type="text", text="\n".join(lines))]
-                _t.sleep(0.3)
+                await _asyncio.sleep(0.3)
             return [TextContent(type="text", text=f"⏱️ Page did not finish loading within {timeout}s: {url}")]
 
         else:
