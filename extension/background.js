@@ -507,6 +507,92 @@ function stopReattachWatcher() {
   }
 }
 
+// ====== Content Script Routing ======
+
+// Cache which tabs have a content script available (avoids failed sendMessage per call)
+let _csTabs = new Set();  // Set<tabId> with known content script
+let _csGraceSet = new Set(); // Set<tabId> that had CS but might have navigated; try once
+
+async function routeToContentScript(tabId, msg) {
+  const id = msg.id;
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      type: 'hermes',
+      func: msg._hermesFunc || msg.params?._hermesFunc,
+      args: msg._hermesArgs || msg.params?._hermesArgs,
+    });
+    _csTabs.add(tabId);
+    _csGraceSet.delete(tabId);
+    if (response && response.ok) {
+      // Content script returns { ok: true, result: <value> }
+      // Wrap result to look like CDP Runtime.evaluate return
+      safeSend({
+        id: id,
+        result: {
+          result: { type: 'object', value: response.result },
+        },
+      });
+    } else {
+      safeSend({
+        id: id,
+        error: { code: -32000, message: response?.error || 'Content script command failed' },
+      });
+    }
+  } catch (e) {
+    // Content script not available (page not loaded, navigation in progress, etc.)
+    // Smart retry: wait 80ms and try once more — CS is usually injected by then
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const retryResponse = await chrome.tabs.sendMessage(tabId, {
+        type: 'hermes',
+        func: msg._hermesFunc || msg.params?._hermesFunc,
+        args: msg._hermesArgs || msg.params?._hermesArgs,
+      });
+      if (retryResponse && retryResponse.ok) {
+        _csTabs.add(tabId);
+        _csGraceSet.delete(tabId);
+        safeSend({
+          id: id,
+          result: { result: { type: 'object', value: retryResponse.result } },
+        });
+        return;
+      }
+    } catch (_) {
+      // Retry also failed — fall through to CDP fallback
+    }
+    _csTabs.delete(tabId);
+    _csGraceSet.add(tabId);  // Try once more on next call before falling back to CDP
+    // Signal fallback: return a specific error that MCP server can detect
+    safeSend({
+      id: id,
+      error: { code: -32999, message: 'Content script unavailable', _fallback: true },
+    });
+  }
+}
+
+// ====== Push Events from Content Script ======
+
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg.type === 'page_loaded' || msg.type === 'page_updated') {
+    // Forward to relay so MCP/plugin can hear about page state changes
+    safeSend({
+      type: 'page_event',
+      event: msg.type,
+      tabId: sender.tab?.id,
+      url: msg.url || msg.state?.url,
+      title: msg.title || msg.state?.title,
+      state: msg.state,
+    });
+    // Clear grace set on page_loaded — content script is back
+    if (msg.type === 'page_loaded' && sender.tab?.id) {
+      _csGraceSet.delete(sender.tab.id);
+      _csTabs.add(sender.tab.id);
+    }
+    return false;
+  }
+  return false;
+});
+
 // ====== Handle CDP Commands from Server ======
 
 function handleServerMessage(msg) {
@@ -547,7 +633,7 @@ function handleServerMessage(msg) {
   const id = msg.id;
   const method = msg.method;
   const params = msg.params || {};
-  const targetTabId = msg.tabId;  // Optional: target specific tab
+  const targetTabId = msg.tabId;
 
   if (attachments.size === 0) {
     if (id) {
@@ -562,10 +648,53 @@ function handleServerMessage(msg) {
   // Determine which tab to route the command to
   let targetId = targetTabId;
   if (!targetId || !attachments.has(targetId)) {
-    // If no specific tabId or it's not attached, use the first attachment
     targetId = attachments.keys().next().value;
   }
 
+  // ── Content Script Fast Path ───────────────────────────────────────
+  // If this command has the _hermes flag, route directly to the content
+  // script in the page, bypassing CDP Runtime.evaluate entirely.
+  if (msg._hermes) {
+    routeToContentScript(targetId, msg);
+    return;
+  }
+  // Also route Runtime.evaluate that contains __hermes calls directly
+  // (backward compat with non-flagged messages from older MCP servers)
+  if (method === 'Runtime.evaluate') {
+    const expr = (params.expression || '').toString();
+    if (expr.includes('__hermes.') && _csTabs.has(targetId)) {
+      // Inline hermes call — best-effort route to content script
+      // Fallback is handled by content script error path
+      try {
+        chrome.tabs.sendMessage(targetId, {
+          type: 'hermes',
+          func: '__eval',
+          args: [expr],
+        }).then(response => {
+          if (response && response.ok) {
+            safeSend({
+              id: id,
+              result: { result: { type: 'object', value: response.result } },
+            });
+          } else {
+            // Fall through to CDP path below
+            sendViaCDP(targetId, id, method, params);
+          }
+        }).catch(() => {
+          sendViaCDP(targetId, id, method, params);
+        });
+        return;
+      } catch (e) {
+        // Fall through to CDP
+      }
+    }
+  }
+
+  // ── Standard CDP Path ──────────────────────────────────────────────
+  sendViaCDP(targetId, id, method, params);
+}
+
+function sendViaCDP(targetId, id, method, params) {
   chrome.debugger.sendCommand(
     { tabId: targetId },
     method,
@@ -590,6 +719,33 @@ function handleServerMessage(msg) {
       }
     }
   );
+}
+
+// ====== Hermes Helper Injection ======
+
+// Cache the injected script source to avoid repeated fetch() calls
+let _cachedHelperSource = null;
+
+async function injectHermesHelper(tabId) {
+  try {
+    // Load helper source (cached after first fetch)
+    if (!_cachedHelperSource) {
+      const resp = await fetch(chrome.runtime.getURL('hermes-helper.js'));
+      _cachedHelperSource = await resp.text();
+    }
+    // Inject via CDP — runs in every future document in this target
+    await new Promise((resolve) => {
+      chrome.debugger.sendCommand(
+        { tabId },
+        'Page.addScriptToEvaluateOnNewDocument',
+        { scriptSource: _cachedHelperSource },
+        () => resolve()
+      );
+    });
+    console.debug('[CDP] __hermes helper injected into tab', tabId);
+  } catch (e) {
+    console.warn('[CDP] Failed to inject __hermes helper:', e.message);
+  }
 }
 
 // ====== Attach / Detach (Multi-Tab) ======
@@ -622,6 +778,9 @@ async function attachToTab(tabId) {
           console.warn('[CDP] Page.enable failed:', chrome.runtime.lastError.message);
         }
       });
+
+      // Inject __hermes helper for all future page loads in this tab
+      injectHermesHelper(tabId);
 
       // Notify server
       if (ws && ws.readyState === WebSocket.OPEN) {

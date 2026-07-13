@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.1.0 (2026-07-12)
+
+### Added
+- **Content Script DOM Channel** — `extension/content-script.js` injected into every page at MAIN world context. Receives DOM commands directly via `chrome.tabs.sendMessage` and executes them against `window.__hermes` — **no CDP Runtime.evaluate overhead**. An `__hermes.click()` now runs as a direct function call, not a CDP JS eval.
+- **Push-based page state** — Content script uses MutationObserver to detect page changes and sends `page_loaded`/`page_updated` events to the relay. Eliminates polling for `browser_wait_selector` on stable pages.
+- **Automatic CDP fallback** — When content script is unavailable (page just navigated, still loading), the MCP server automatically falls back to CDP Runtime.evaluate. No tool call ever fails.
+- **Backward-compat inline routing** — Even non-flagged `Runtime.evaluate` messages that contain `__hermes.` calls get routed to the content script when available, with CDP fallback.
+
+### Changed
+- All `_hermes_call` calls now route through content script by default, bypassing CDP entirely.
+- Extension SW now has bidirectional messaging with content script (forward commands, receive push events).
+- Message protocol extended: `_hermes`, `_hermesFunc`, `_hermesArgs` fields for content script routing.
+
+## v2.0.0 (2026-07-12)
+
+### Added
+- **`__hermes` helper injection** — `extension/hermes-helper.js` injected via `Page.addScriptToEvaluateOnNewDocument` on every tab attach. Provides `window.__hermes` with pre-compiled functions: `snapshot()`, `click()`, `type()`, `hover()`, `fillByLabel()`, `find()`, `waitSelector()`, `scrollBy()`, `key()`, `getText()`, `docInfo()`, `readyState()`. Eliminates 40-60 lines of inline JS per tool call.
+- **`browser_do` compound tool** — execute multiple actions (navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text, wait) in a SINGLE tool call. Eliminates LLM thinking time between steps.
+- **`browser_navigate_wait`** — navigate + poll for `readyState=complete` in one tool call. Saves a `browser_wait_for_navigation` round-trip.
+- **Single-CDP-call click** — `browser_click` now finds element AND dispatches mouse events in ONE `Runtime.evaluate` instead of 2 sequential CDP calls (50% faster).
+- **Single-CDP-call hover/type** — same optimization for `browser_hover` and `browser_type`.
+- **Async wait_selector** — `browser_wait_selector` now does the polling on the JS side (via `__hermes.waitSelector`), eliminating the Python-side polling loop and intermediate CDP calls.
+- **Smart full-snapshot** — `browser_snapshot(full=true)` now embeds `textContent` in the snapshot result, eliminating a separate `browser_get_text` CDP call.
+
+### Changed
+- All MCP tools (click, type, hover, snapshot, scroll, wait_selector, fill_by_label, get_text, get_title, key, find, enter) now check for `__hermes` first and only fall back to inline JS if not loaded.
+- Snapshot output format changed: `full=true` now returns `textContent` inline instead of requiring a separate CDP call.
+- Version bumped to 2.0.0
+
 ## v1.5.1 (2026-06-29)
 
 ### Added
