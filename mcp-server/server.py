@@ -494,7 +494,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="browser_snapshot",
-            description="Get an accessibility-style snapshot of the current page. Returns compact info for all interactive elements (links, buttons, inputs) with coordinates so you can interact by coordinate or selector. Faster than taking a screenshot.",
+            description="Get an accessibility-style snapshot of the current page. Returns compact info for all interactive elements (links, buttons, inputs) with coordinates so you can interact. Faster than taking a screenshot. Auto-cached for 2s — repeat calls within that window are instant.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -862,7 +862,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="browser_do",
-            description="Execute multiple browser actions sequentially in ONE tool call. Each action is a dict with 'action' field and action-specific params. Supported: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text, wait. Eliminates LLM thinking time between steps.",
+            description="Execute multiple browser actions sequentially in ONE tool call. Eliminates LLM thinking time between steps. Supported actions: navigate, navigate_wait (navigate + auto-ready + optional element wait), click, click_text, hover, type, enter, key, scroll, snapshot, screenshot, get_text, fill_by_label, wait_selector, back, forward, eval, wait.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -877,7 +877,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="browser_navigate_wait",
-            description="Navigate to a URL and wait until the page is fully loaded (readyState=complete). Combines navigate + wait in one tool call, saving a round-trip.",
+            description="Navigate to a URL and wait until the page is fully loaded (readyState=complete). Auto-returns snapshot data (interactive elements with coordinates) so you can see the page immediately — no separate browser_snapshot call needed. Pass snapshot=False to get just the title.",
             inputSchema={
                 "type": "object",
                 "properties": {

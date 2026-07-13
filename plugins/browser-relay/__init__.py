@@ -84,6 +84,37 @@ def _parse_result(result: dict) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Snapshot Cache (2-second TTL)
+# ---------------------------------------------------------------------------
+
+_snapshot_cache: dict[tuple, Any] = {}
+_last_cache_ts: dict[tuple, float] = {}
+_SNAPSHOT_TTL = 2.0
+
+
+def _get_cached_snapshot(tab_id: int | None, full: bool) -> Any | None:
+    """Return cached snapshot if fresh, or None on miss/stale."""
+    key = (tab_id or 0, full)
+    ts = _last_cache_ts.get(key)
+    if ts is not None and time.time() - ts < _SNAPSHOT_TTL:
+        return _snapshot_cache.get(key)
+    return None
+
+
+def _cache_snapshot(tab_id: int | None, full: bool, data: Any) -> None:
+    """Store a snapshot in the cache."""
+    key = (tab_id or 0, full)
+    _snapshot_cache[key] = data
+    _last_cache_ts[key] = time.time()
+
+
+def _invalidate_cache() -> None:
+    """Clear all cached snapshots."""
+    _snapshot_cache.clear()
+    _last_cache_ts.clear()
+
+
+# ---------------------------------------------------------------------------
 # Tool Schemas (OpenAI format)
 # ---------------------------------------------------------------------------
 
@@ -638,6 +669,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
     def _dispatch(self, name: str, args: dict) -> str:
         if name == "browser_navigate":
             result = _cdp("Page.navigate", {"url": args["url"]})
+            _invalidate_cache()
             if "error" in result:
                 return json.dumps({"error": result["error"]})
             return json.dumps(result.get("result", {}), indent=2)
@@ -736,7 +768,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_snapshot":
             full = args.get("full", False)
-            result = _hermes_call("snapshot", full, fallback=f"""
+            cached = _get_cached_snapshot(_shared_tab_id, full)
+            if cached is not None:
+                snap = cached
+            else:
+                result = _hermes_call("snapshot", full, fallback=f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
                 const _shadowQueryAll = (root, sel) => {{
@@ -778,9 +814,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return {{ info, items, textContent }};
             }})()
             """)
-            snap = _parse_result(result)
-            if isinstance(snap, dict) and "error" in snap:
-                return f"Snapshot error: {snap['error']}"
+                snap = _parse_result(result)
+                if isinstance(snap, dict) and "error" in snap:
+                    return f"Snapshot error: {snap['error']}"
+                _cache_snapshot(_shared_tab_id, full, snap)
             info = snap.get("info", {})
             items = snap.get("items", [])
             lines = [
@@ -960,6 +997,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_back":
             _hermes_call("historyBack", fallback="window.history.back()")
+            _invalidate_cache()
             return "Navigated back"
 
         elif name == "browser_console":
@@ -1195,12 +1233,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_refresh":
             hard = args.get("hard_reload", False)
             result = _cdp("Page.reload", {"ignoreCache": hard})
+            _invalidate_cache()
             if "error" in result:
                 return json.dumps({"error": result["error"]})
             return "🔄 Page reloaded" + (" (hard)" if hard else "")
 
         elif name == "browser_forward":
             _hermes_call("historyForward", fallback="window.history.forward()")
+            _invalidate_cache()
             return "Navigated forward"
 
         elif name == "browser_get_title":
@@ -1723,9 +1763,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         results.append(f"Scrolled {d}")
                     elif action == "back":
                         _hermes_call("historyBack", fallback="window.history.back()")
+                        _invalidate_cache()
                         results.append("Navigated back")
                     elif action == "forward":
                         _hermes_call("historyForward", fallback="window.history.forward()")
+                        _invalidate_cache()
                         results.append("Navigated forward")
                     elif action == "eval":
                         expr = act["expression"]
@@ -1758,6 +1800,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             url = args["url"]
             timeout = min(args.get("timeout", 15), 60)
             nav_result = _cdp("Page.navigate", {"url": url})
+            _invalidate_cache()
             if "error" in nav_result:
                 return json.dumps({"error": nav_result["error"]})
             import time as _t

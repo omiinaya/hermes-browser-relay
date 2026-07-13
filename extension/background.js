@@ -730,7 +730,7 @@ async function injectHermesHelper(tabId) {
   try {
     // Load helper source (cached after first fetch)
     if (!_cachedHelperSource) {
-      const resp = await fetch(chrome.runtime.getURL('hermes-helper.js'));
+      const resp = await fetch(chrome.runtime.getURL('hermes-helper.min.js'));
       _cachedHelperSource = await resp.text();
     }
     // Inject via CDP — runs in every future document in this target
