@@ -558,6 +558,32 @@
     return {completed: completed, errors: errors};
   };
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Lightweight state snapshot — for push event dedup (avoids full DOM walk)
+  // Only counts interactive elements and checks viewport visibility.
+  // ~10x cheaper than snapshot(false) for push event use case.
+  // ──────────────────────────────────────────────────────────────────────────
+  H.getStateSnapshot = function() {
+    var els = document.querySelectorAll('button, a, input, textarea, select, [tabindex]');
+    var total = 0, visible = 0;
+    var wh = window.innerHeight;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      total++;
+      try {
+        var r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.top < wh && r.bottom > 0) visible++;
+      } catch (e) {}
+    }
+    return {
+      total: total,
+      visible: visible,
+      title: document.title,
+      readyState: document.readyState,
+      url: location.href,
+    };
+  };
+
   // Export
   window.__hermes = H;
 })();
