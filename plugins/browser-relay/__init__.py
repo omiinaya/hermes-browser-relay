@@ -10,6 +10,7 @@ Usage:
 """
 
 import json
+import time
 import base64
 import urllib.request
 import urllib.error
@@ -45,10 +46,12 @@ _cdp_opener = urllib.request.build_opener()
 _cdp_opener.addheaders = [("Content-Type", "application/json")]
 
 
-def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT) -> dict:
+def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, **extra) -> dict:
     """Send a CDP command to the relay server. Uses shared connection for keep-alive.
     Routes to _shared_tab_id if set via _set_tab()."""
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
+    for k, v in extra.items():
+        body_dict[k] = v
     if _shared_tab_id is not None:
         body_dict["tabId"] = _shared_tab_id
     body = json.dumps(body_dict).encode()
@@ -647,50 +650,45 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_hover":
             selector = args["selector"]
-            find_expr = f"""
+            result = _hermes_call("hover", selector, fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
                 const r = el.getBoundingClientRect();
-                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+                el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+                el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+                return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """
-            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
-            coords = _parse_result(find_result)
-            if isinstance(coords, dict) and "error" in coords:
-                return f"Error: {coords['error']}"
-            if isinstance(coords, dict) and "x" in coords:
-                x, y = round(coords["x"]), round(coords["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-                return f"Hovered '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
-            return f"Unexpected: {json.dumps(coords, indent=2)}"
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return f"Error: {value['error']}"
+            return f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')})"
 
         elif name == "browser_click":
             selector = args["selector"]
-            find_expr = f"""
+            result = _hermes_call("click", selector, fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
                 const r = el.getBoundingClientRect();
-                return {{ x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """
-            find_result = _cdp("Runtime.evaluate", {"expression": find_expr, "returnByValue": True})
-            coords = _parse_result(find_result)
-            if isinstance(coords, dict) and "error" in coords:
-                return f"Error: {coords['error']}"
-            if isinstance(coords, dict) and "x" in coords:
-                x, y = round(coords["x"]), round(coords["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                return f"Clicked '{coords.get('text', '?')}' ({coords.get('tag', '?')}) at ({x}, {y})"
-            return f"Unexpected: {json.dumps(coords, indent=2)}"
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return f"Error: {value['error']}"
+            return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')})"
 
         elif name == "browser_type":
             selector = args["selector"]
             text = args["text"]
-            # Use execCommand('insertText') for full React/Next.js compatibility
-            type_expr = f"""
+            result = _hermes_call("type", selector, text, fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
@@ -702,8 +700,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
             }})()
-            """
-            result = _cdp("Runtime.evaluate", {"expression": type_expr, "returnByValue": True})
+            """)
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
@@ -739,10 +736,9 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_snapshot":
             full = args.get("full", False)
-            snapshot_js = f"""
+            result = _hermes_call("snapshot", full, fallback=f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
                 const _shadowQueryAll = (root, sel) => {{
                     let r = [];
                     try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
@@ -775,10 +771,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     }});
                 }});
                 const info = {{ title: document.title, url: location.href, viewport: {{ w: window.innerWidth, h: window.innerHeight }}, total: items.length, visible: items.filter(i => i.visible).length }};
-                return {{ info, items }};
+                let textContent = '';
+                if ({json.dumps(full)} === true) {{
+                    textContent = (document.body ? document.body.innerText : '').substring(0, 30000);
+                }}
+                return {{ info, items, textContent }};
             }})()
-            """
-            snap = _parse_result(_cdp("Runtime.evaluate", {"expression": snapshot_js, "returnByValue": True}))
+            """)
+            snap = _parse_result(result)
             if isinstance(snap, dict) and "error" in snap:
                 return f"Snapshot error: {snap['error']}"
             info = snap.get("info", {})
@@ -796,54 +796,55 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             if len(items) > 60:
                 lines.append(f"  ... and {len(items) - 60} more")
             if full:
-                text_js = "document.body.innerText.substring(0, 30000)"
-                lines.extend(["", "--- Page Text ---", str(_parse_result(_cdp("Runtime.evaluate", {"expression": text_js, "returnByValue": True})))])
+                text_content = snap.get("textContent", "")
+                lines.extend(["", "--- Page Text ---", str(text_content)[:20000]])
             return "\n".join(lines)
 
         elif name == "browser_scroll":
             direction = args.get("direction", "down")
             amount = args.get("amount", 0)
-            if not amount:
-                amount = int(_parse_result(_cdp("Runtime.evaluate", {"expression": "Math.round(window.innerHeight * 0.6)", "returnByValue": True})) or 400)
-            dx, dy = 0, 0
-            if direction == "down":
-                dy = amount
-            elif direction == "up":
-                dy = -amount
-            elif direction == "right":
-                dx = amount
-            elif direction == "left":
-                dx = -amount
-            _cdp("Runtime.evaluate", {"expression": f"window.scrollBy({{left:{dx}, top:{dy}, behavior:'smooth'}})"})
-            return f"Scrolled {direction} by {abs(dx or dy)}px"
+            result = _hermes_call("scrollBy", direction, amount, fallback=f"""
+            (() => {{
+                const dir = {json.dumps(direction)};
+                let amt = {amount or 0};
+                if (!amt) {{ amt = Math.round(window.innerHeight / 2); }}
+                const dx = dir === 'right' ? amt : (dir === 'left' ? -amt : 0);
+                const dy = dir === 'down' ? amt : (dir === 'up' ? -amt : 0);
+                window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+                return {{ ok: true, direction: dir, amount: amt }};
+            }})()
+            """)
+            return f"Scrolled {direction} by {abs(amount or 400)}px"
 
         elif name == "browser_wait_selector":
             selector = args["selector"]
             timeout = min(args.get("timeout", 15), 60)
             state = args.get("state", "visible")
-            import time as _t
-            deadline = _t.time() + timeout
-            while _t.time() < deadline:
-                check_js = f"(s={json.dumps(selector)},(_sq=(r,sel)=>{{let z=[];try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}}if(r.shadowRoot)z=z.concat(_sq(r.shadowRoot,sel));for(const c of r.children||[])z=z.concat(_sq(c,sel));return z}})(document,s).find(el=>{{let r=el.getBoundingClientRect();return r.width>0&&r.height>0}}) ? true : false)"
-                if _parse_result(_cdp("Runtime.evaluate", {"expression": check_js, "returnByValue": True})):
-                    return f"Selector '{selector}' matched"
-                import asyncio
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        _t.sleep(0.5)  # synchronous sleep since we're not in an async context
-                except RuntimeError:
-                    _t.sleep(0.5)
+            result = _hermes_call("waitSelector", selector, timeout, state, fallback=f"""
+            (() => {{
+                const deadline = Date.now() + {timeout * 1000};
+                while (Date.now() < deadline) {{
+                    const el = document.querySelector({json.dumps(selector)});
+                    if (el) {{
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) return {{ ok: true }};
+                    }}
+                }}
+                return {{ error: 'Timeout' }};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and value.get("ok"):
+                return f"Selector '{selector}' matched"
             return f"Timed out ({timeout}s) waiting for '{selector}'"
 
         elif name == "browser_click_text":
             text_query = args["text"]
             tag_filter = args.get("tag", "")
-            click_js = f"""
+            result = _hermes_call("clickText", text_query, tag_filter, fallback=f"""
             (() => {{
                 const q = {json.dumps(text_query)}.toLowerCase();
                 const tag = {json.dumps(tag_filter)};
-                // Shadow DOM-aware queryAll
                 const _shadowQueryAll = (root, sel) => {{
                     let r = [];
                     try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
@@ -858,29 +859,27 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     if (txt.includes(q)) {{
                         const r = el.getBoundingClientRect();
                         if (r.width === 0 || r.height === 0) continue;
-                        return {{ x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), tag: el.tagName, text: (el.textContent||'').trim().substring(0,80) }};
+                        const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                        el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                        return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
                     }}
                 }}
                 return {{ error: 'No element found with text: ' + q }};
             }})()
-            """
-            ct = _parse_result(_cdp("Runtime.evaluate", {"expression": click_js, "returnByValue": True}))
-            if isinstance(ct, dict) and "error" in ct:
-                return f"Error: {ct['error']}"
-            if isinstance(ct, dict) and "x" in ct:
-                x, y = round(ct["x"]), round(ct["y"])
-                _cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                _cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                return f"Clicked '{ct.get('text','?')}' ({ct.get('tag','?')}) by text"
-            return f"Unexpected: {json.dumps(ct)}"
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return f"Error: {value['error']}"
+            return f"Clicked '{value.get('text','?')}' ({value.get('tag','?')}) by text"
 
         elif name == "browser_fill_by_label":
             label = args["label"]
             text = args["text"]
-            fill_js = f"""
+            result = _hermes_call("fillByLabel", label, text, fallback=f"""
             (() => {{
                 const search = {json.dumps(label)}.toLowerCase();
-                // Shadow DOM-aware helpers
                 const _shadowQueryAll = (root, sel) => {{
                     let r = [];
                     try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
@@ -888,25 +887,21 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
                     return r;
                 }};
-                const _shadowQuery = (root, sel) => _shadowQueryAll(root, sel)[0] || null;
-                // Try label association (light + shadow DOM)
                 let input = null;
                 for (const lbl of _shadowQueryAll(document, 'label')) {{
                     if ((lbl.textContent||'').trim().toLowerCase().includes(search)) {{
                         const forId = lbl.getAttribute('for');
-                        if (forId) input = document.getElementById(forId) || _shadowQuery(document, '#' + CSS.escape(forId)) || _shadowQuery(document, 'input[name=' + JSON.stringify(forId) + ']');
-                        else input = lbl.querySelector('input, textarea, select') || _shadowQuery(lbl, 'input, textarea, select');
+                        if (forId) input = document.getElementById(forId) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
+                        else input = lbl.querySelector('input, textarea, select');
                         if (input) break;
                     }}
                 }}
-                // Try placeholder (shadow-aware)
                 if (!input) {{
                     for (const el of _shadowQueryAll(document, 'input, textarea')) {{
                         const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
                         if (ph.toLowerCase().includes(search)) {{ input = el; break; }}
                     }}
                 }}
-                // Try name (shadow-aware)
                 if (!input) {{
                     for (const el of _shadowQueryAll(document, 'input, textarea')) {{
                         if ((el.getAttribute('name') || '').toLowerCase().includes(search)) {{ input = el; break; }}
@@ -921,15 +916,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: input.tagName, type: input.type || '' }};
             }})()
-            """
-            fill_result = _parse_result(_cdp("Runtime.evaluate", {"expression": fill_js, "returnByValue": True}))
+            """)
+            fill_result = _parse_result(result)
             if isinstance(fill_result, dict) and "error" in fill_result:
                 return f"Error: {fill_result['error']}"
             return f"Filled '{label}' with '{text}'"
 
         elif name == "browser_get_text":
-            text_js = "document.body.innerText.substring(0, 50000)"
-            return str(_parse_result(_cdp("Runtime.evaluate", {"expression": text_js, "returnByValue": True})))
+            result = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0, 50000) : ''")
+            return str(_parse_result(result))
 
         elif name == "browser_recent_events":
             limit = min(args.get("limit", 20), 200)
@@ -964,7 +959,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             return f"Pressed {key}"
 
         elif name == "browser_back":
-            _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+            _hermes_call("historyBack", fallback="window.history.back()")
             return "Navigated back"
 
         elif name == "browser_console":
@@ -1205,45 +1200,48 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             return "🔄 Page reloaded" + (" (hard)" if hard else "")
 
         elif name == "browser_forward":
-            _cdp("Runtime.evaluate", {"expression": "window.history.forward()"})
+            _hermes_call("historyForward", fallback="window.history.forward()")
             return "Navigated forward"
 
         elif name == "browser_get_title":
-            title = _parse_result(_cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True}))
-            return f"📄 {title}"
+            result = _hermes_call("docInfo", fallback='({ title: document.title, url: location.href })')
+            value = _parse_result(result)
+            if isinstance(value, dict):
+                return f"📄 {value.get('title', '?')}\n🌐 {value.get('url', '?')}"
+            return f"📄 {value}"
 
         elif name == "browser_find":
             query = args["query"]
-            css_selector = args.get("selector", "")
-            max_results = min(args.get("max_results", 20), 50)
-            find_js = f"""
+            result = _hermes_call("find", query, fallback=f"""
             (() => {{
-                const query = {json.dumps(query)}.toLowerCase();
-                const scope = {json.dumps(css_selector)};
-                const maxR = {max_results};
-                const root = scope ? document.querySelector(scope) : document.body;
-                if (!root) return {{ error: 'Scope not found' }};
+                const q = {json.dumps(query)}.toLowerCase();
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                // Shadow DOM-aware queryAll
                 const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
-                const all = _sq(root, selectors.join(','));
+                const all = _sq(document, selectors.join(','));
                 const seen = new Set();
                 const results = [];
                 let idx = 0;
                 all.forEach(el => {{
                     if (seen.has(el)) return;
                     seen.add(el);
-                    const txt = (el.textContent||'').trim().toLowerCase();
-                    if (!txt.includes(query)) return;
-                    if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
-                    idx++;
+                    const txt = (el.textContent||'').trim();
+                    const aria = el.getAttribute('aria-label') || '';
+                    const placeholder = el.placeholder || '';
+                    const name = el.getAttribute('name') || '';
+                    const val = el.value || '';
+                    const textSources = [txt, aria, placeholder, name, val];
+                    let matched = false;
+                    for (const s of textSources) {{ if (s.toLowerCase().includes(q)) {{ matched = true; break; }} }}
+                    if (!matched) return;
                     const r = el.getBoundingClientRect();
-                    results.push({{ ref: 'e'+idx, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0,100), x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
+                    if (r.width === 0 || r.height === 0) return;
+                    idx++;
+                    results.push({{ ref: 'e'+idx, tag: el.tagName.toLowerCase(), text: txt.substring(0,120), x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
                 }});
-                return {{ count: results.length, results: results.slice(0, maxR) }};
+                return {{ count: results.length, results: results }};
             }})()
-            """
-            find_result = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True, "awaitPromise": True}))
+            """)
+            find_result = _parse_result(result)
             if isinstance(find_result, dict) and "error" in find_result:
                 return json.dumps({"error": find_result["error"]})
             count = find_result.get("count", 0)
@@ -1277,7 +1275,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_select_option":
             selector = args["selector"]
             text = args["text"]
-            select_js = f"""
+            result = _hermes_call("selectOption", selector, text, fallback=f"""
             (() => {{
                 const select = document.querySelector({json.dumps(selector)});
                 if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
@@ -1291,18 +1289,17 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 select.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
             }})()
-            """
-            result = _cdp("Runtime.evaluate", {"expression": select_js, "returnByValue": True})
+            """)
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
             return f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'"
 
         elif name == "browser_screenshot_annotated":
-            annotate_js = f"""
+            # Get interactive elements via __hermes.snapshot (avoids inline JS through CDP)
+            annotate_result = _hermes_call("snapshot", False, fallback=f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                // Shadow DOM-aware queryAll — traverses light DOM + shadow roots recursively
                 const _shadowQueryAll = (root, sel) => {{
                     let r = [];
                     try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
@@ -1319,16 +1316,19 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     seen.add(el);
                     const r = el.getBoundingClientRect();
                     if (r.width === 0 || r.height === 0) return;
-                    if (r.top > window.innerHeight || r.bottom < 0) return;
                     idx++;
-                    const txt = (el.textContent||'').trim().substring(0, 40);
-                    const label = txt || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || el.tagName;
-                    items.push({{ ref: idx, text: label.substring(0, 30), x: Math.round(r.x + r.width/2), y: Math.round(r.top + 8) }});
+                    const txt = (el.textContent||'').trim().substring(0, 100);
+                    const placeholder = el.placeholder || '';
+                    const aria = el.getAttribute('aria-label') || '';
+                    const name = el.getAttribute('name') || '';
+                    items.push({{ ref: 'e' + idx, tag: el.tagName.toLowerCase(), text: txt, placeholder: placeholder, aria_label: aria, name: name, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
                 }});
-                return items.slice(0, 50);
+                return {{ info: {{ total: items.length, visible: items.filter(i => i.visible).length }}, items: items }};
             }})()
-            """
-            annotations = _parse_result(_cdp("Runtime.evaluate", {"expression": annotate_js, "returnByValue": True}))
+            """)
+            snap = _parse_result(annotate_result)
+            all_items = snap.get("items", [])
+            annotations = [it for it in all_items if it.get("visible") and it.get("x")][:50]
             shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
             data = shot.get("result", {}).get("data", "")
             lines = ["📸 Annotated screenshot — interactive elements:", ""]
@@ -1534,63 +1534,81 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_form_fill":
             fields = args["fields"]
-            results = []
-            import time as _ff_mod
-            for identifier, value in fields.items():
-                value_str = str(value)
-                if identifier.startswith("input[") or identifier.startswith("#") or identifier.startswith(".") or identifier.startswith("[") or identifier.startswith(":") or identifier.count(" ") > 0:
-                    fill_js = f"""
-                    (() => {{
-                        const el = document.querySelector({json.dumps(identifier)});
-                        if (!el) return {{ error: 'Not found: ' + {json.dumps(identifier)} }};
-                        if (el.tagName === 'SELECT') {{
-                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
-                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,tag:'SELECT'}}; }}
-                            return {{error:'Option not found'}};
-                        }}
-                        el.focus(); el.value = ''; el.select();
-                        document.execCommand('insertText', false, {json.dumps(value_str)});
-                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
-                        return {{ok:true,tag:el.tagName}};
-                    }})()
-                    """
-                else:
-                    fill_js = f"""
-                    (() => {{
-                        const s = {json.dumps(identifier)}.toLowerCase();
-                        const _sq = (r,sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
-                        let el = null;
-                        for (const lbl of _sq(document, 'label')) {{
-                            if ((lbl.textContent||'').trim().toLowerCase().includes(s)) {{
-                                const fid = lbl.getAttribute('for');
+            result = _hermes_call("formFill", fields, fallback=f"""
+            (() => {{
+                var fields = {json.dumps(fields)};
+                var errors = [];
+                var completed = 0;
+                var keys = Object.keys(fields);
+                var _shadowQueryAll = function(r, sel) {{ var z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_shadowQueryAll(r.shadowRoot,sel)); for(var c=0;c<(r.children||[]).length;c++) z=z.concat(_shadowQueryAll(r.children[c],sel)); return z; }};
+                for (var i = 0; i < keys.length; i++) {{
+                    var identifier = keys[i];
+                    var value = fields[identifier];
+                    var valueStr = String(value);
+                    var isSelector = identifier.charCodeAt(0) === 35 || identifier.charCodeAt(0) === 46 || identifier.charCodeAt(0) === 91 || identifier.charCodeAt(0) === 58 || identifier.indexOf(' ') > 0 || identifier.indexOf('input[') === 0;
+                    var el = null;
+                    if (isSelector) {{
+                        el = document.querySelector(identifier);
+                    }} else {{
+                        var s = identifier.toLowerCase();
+                        var labels = _shadowQueryAll(document, 'label');
+                        for (var li = 0; li < labels.length; li++) {{
+                            var lbl = labels[li];
+                            if ((lbl.textContent||'').trim().toLowerCase().indexOf(s) !== -1) {{
+                                var fid = lbl.getAttribute('for');
                                 if (fid) el = document.getElementById(fid);
                                 else el = lbl.querySelector('input,textarea,select');
                                 if (el) break;
                             }}
                         }}
-                        if (!el) {{ for (const e of _sq(document, 'input,textarea')) {{ const ph = e.getAttribute('placeholder')||e.getAttribute('aria-label')||''; if(ph.toLowerCase().includes(s)){{el=e;break;}} }} }}
-                        if (!el) {{ for (const e of _sq(document, 'input,textarea')) {{ if((e.getAttribute('name')||'').toLowerCase().includes(s)){{el=e;break;}} }} }}
-                        if (!el) return {{error:'Not found: '+s}};
-                        if (el.tagName === 'SELECT') {{
-                            const opt = Array.from(el.options).find(o => o.value === {json.dumps(value_str)} || o.text.includes({json.dumps(value_str)}));
-                            if (opt) {{ el.value = opt.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,tag:'SELECT'}}; }}
-                            return {{error:'Option not found'}};
+                        if (!el) {{
+                            var allInp = _shadowQueryAll(document, 'input,textarea');
+                            for (var pi = 0; pi < allInp.length; pi++) {{
+                                var ph = allInp[pi].getAttribute('placeholder') || allInp[pi].getAttribute('aria-label') || '';
+                                if (ph.toLowerCase().indexOf(s) !== -1) {{ el = allInp[pi]; break; }}
+                            }}
                         }}
-                        el.focus(); el.value = ''; el.select();
-                        document.execCommand('insertText', false, {json.dumps(value_str)});
-                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
-                        return {{ok:true,tag:el.tagName}};
-                    }})()
-                    """
-                r = _parse_result(_cdp("Runtime.evaluate", {"expression": fill_js, "returnByValue": True}))
-                if isinstance(r, dict) and "error" in r:
-                    results.append({"field": identifier, "error": r["error"]})
-                else:
-                    results.append({"field": identifier, "set": True})
-                _ff_mod.sleep(0.05)
-            return json.dumps({"results": results, "filled": sum(1 for r in results if r.get("set")), "failed": sum(1 for r in results if "error" in r)}, indent=2)
+                        if (!el) {{
+                            var allInp2 = _shadowQueryAll(document, 'input,textarea');
+                            for (var ni = 0; ni < allInp2.length; ni++) {{
+                                if ((allInp2[ni].getAttribute('name')||'').toLowerCase().indexOf(s) !== -1) {{ el = allInp2[ni]; break; }}
+                            }}
+                        }}
+                    }}
+                    if (!el) {{
+                        errors.push({{field: identifier, error: 'Field not found'}});
+                        continue;
+                    }}
+                    if (el.tagName === 'SELECT') {{
+                        var opts = Array.from(el.options);
+                        var found = false;
+                        for (var j = 0; j < opts.length; j++) {{
+                            if (opts[j].value === valueStr || opts[j].text.indexOf(valueStr) !== -1) {{
+                                el.value = opts[j].value;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                completed++;
+                                found = true;
+                                break;
+                            }}
+                        }}
+                        if (!found) errors.push({{field: identifier, error: 'Option not found'}});
+                        continue;
+                    }}
+                    el.focus(); el.value = ''; el.select();
+                    document.execCommand('insertText', false, valueStr);
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    completed++;
+                }}
+                return {{completed: completed, errors: errors}};
+            }})()
+            """)
+            value = _parse_result(result)
+            if isinstance(value, dict) and "error" in value:
+                return json.dumps(value, indent=2)
+            if isinstance(value, dict):
+                return json.dumps(value, indent=2)
+            return str(value)
 
         elif name == "browser_create_tab":
             url = args.get("url", "about:blank")
@@ -1637,8 +1655,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     elif action == "wait_selector":
                         sel = act["selector"]
                         to = min(act.get("timeout", 10), 60)
-                        wait_js = f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()"
-                        r = _parse_result(_cdp("Runtime.evaluate", {"expression": wait_js, "returnByValue": True}))
+                        ws_r = _hermes_call("waitSelector", sel, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                        r = _parse_result(ws_r)
                         results.append(f"Wait: '{sel}' {'visible' if isinstance(r, dict) and r.get('ok') else 'timeout'}")
                     elif action == "click":
                         sel = act["selector"]
@@ -1657,8 +1675,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         _hermes_call("scrollBy", d, a)
                         results.append(f"Scrolled {d}")
                     elif action == "back":
-                        _cdp("Runtime.evaluate", {"expression": "window.history.back()"})
+                        _hermes_call("historyBack", fallback="window.history.back()")
                         results.append("Navigated back")
+                    elif action == "forward":
+                        _hermes_call("historyForward", fallback="window.history.forward()")
+                        results.append("Navigated forward")
                     elif action == "eval":
                         expr = act["expression"]
                         r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
@@ -1695,7 +1716,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             import time as _t
             deadline = _t.time() + timeout
             while _t.time() < deadline:
-                ready = _parse_result(_cdp("Runtime.evaluate", {"expression": "(typeof __hermes !== 'undefined' && __hermes.readyState()) || ({ readyState: document.readyState, title: document.title })", "returnByValue": True}))
+                ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
                 if isinstance(ready, dict) and ready.get("readyState") == "complete":
                     return f"Loaded: {ready.get('title', '?')}"
                 _t.sleep(0.3)
