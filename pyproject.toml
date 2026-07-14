@@ -14,3 +14,6 @@ indent-style = "space"
 minversion = "7.0"
 testpaths = ["tests", "mcp-server/tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: marks end-to-end tests that require a real browser (Chromium)",
+]

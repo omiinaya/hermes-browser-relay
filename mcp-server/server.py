@@ -30,7 +30,7 @@ from mcp.server.stdio import stdio_server  # noqa: E402
 from mcp.types import Tool, TextContent, ImageContent  # noqa: E402
 
 # Import shared utilities (snapshot cache, JS quoting, result parsing)
-from shared import (  # noqa: E402
+from browser_relay.shared import (  # noqa: E402
     js_quote,
     parse_result,
     cache_snapshot,

@@ -23,7 +23,7 @@ if _plugin_root not in _sys.path:
     _sys.path.insert(0, _plugin_root)
 
 # Import shared utilities
-from shared import (  # noqa: E402
+from browser_relay.shared import (  # noqa: E402
     js_quote,
     parse_result,
     cache_snapshot,

@@ -8,11 +8,14 @@ help:  ## Show available targets
 
 test: test-python test-mcp test-ext  ## Run all tests
 
-test-python:  ## Run relay server tests
-	.venv/bin/python -m pytest tests/ $(PYTEST_FLAGS)
+test-python:  ## Run relay server tests (excluding integration/E2E)
+	.venv/bin/python -m pytest tests/ --ignore=tests/integration $(PYTEST_FLAGS)
 
 test-mcp:  ## Run MCP server tests
 	.venv/bin/python -m pytest mcp-server/tests/ $(PYTEST_FLAGS)
+
+test-integration:  ## Run integration/E2E tests (requires Chromium)
+	.venv/bin/python -m pytest tests/integration/ -v --tb=long
 
 test-ext: node_modules  ## Run extension tests (all 3 test files)
 	node --test --test-force-exit tests/extensions/*.test.js
