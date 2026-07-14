@@ -459,7 +459,7 @@
     return true;
   };
 
-  H.version = '2.1.0';
+  H.version = '2.4.2';
 
   // ──────────────────────────────────────────────────────────────────────────
   // Click by text — find first element containing text, then click it

@@ -84,7 +84,10 @@ class TestStatus:
         resp = await client.get("/status")
         assert resp.status == 200
         data = await resp.json()
-        assert data["version"] == "2.4.0"
+        import os
+        _version_file = os.path.join(os.path.dirname(__file__), "..", "VERSION")
+        expected = open(_version_file).read().strip()
+        assert data["version"] == expected
         assert data["extension_connected"] is False
         assert data["tab_id"] is None
         assert data["pending_requests"] == 0

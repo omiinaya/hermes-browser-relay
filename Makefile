@@ -26,6 +26,16 @@ lint-js:  ## Lint JavaScript with ESLint
 	npm run lint
 lint-all: lint lint-js  ## Run all linters
 
+update-version:  ## Update version in all files (usage: make update-version VERSION=2.4.3)
+	test -n "$(VERSION)" && echo $(VERSION) > VERSION
+	test -n "$(VERSION)" && sed -i 's/"version": ".*"/"version": "$(VERSION)"/' extension/manifest.json
+	test -n "$(VERSION)" && sed -i 's/version: .*/version: $(VERSION)/' plugins/browser-relay/plugin.yaml
+	test -n "$(VERSION)" && sed -i 's/"version": ".*"/"version": "$(VERSION)"/' package.json
+	test -n "$(VERSION)" && echo "Version updated to $(VERSION)" || echo "Usage: make update-version VERSION=x.y.z"
+
+fmt-js:  ## Auto-fix JS with ESLint
+	npm run lint:fix
+
 minify-ext:  ## Minify content-script.js using terser (via npx)
 	npx terser extension/content-script.js -o extension/content-script.js --compress --mangle --comments false 2>/dev/null || \
 	  echo "Note: content-script.js is maintained in minified form; terser is optional."

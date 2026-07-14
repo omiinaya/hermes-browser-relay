@@ -40,7 +40,19 @@ tests/                   → pytest (relay) + node:test (extension)
 
 ## Versioning
 
-The canonical version is in `VERSION`. Before release, update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, and any hardcoded version strings in source. Run `make test && make lint-all` to verify.
+The canonical version is in `VERSION`. Before release, update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, and any hardcoded version strings in source:
+```bash
+make update-version VERSION=2.x.y
+```
+Run `make test && make lint-all` to verify.
+
+## Git Conventions
+
+Enable commit message template and pre-commit hooks:
+```bash
+git config commit.template .gitmessage
+git config core.hooksPath .githooks
+```
 
 ## Pre-commit Hooks
 
