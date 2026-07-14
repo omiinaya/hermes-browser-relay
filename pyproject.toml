@@ -4,6 +4,7 @@ version = "2.4.2"
 description = "Remote Chrome/Chromium browser control via CDP — Hermes plugin and MCP server"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+readme = "README.md"
 authors = [
     { name = "omiinaya", email = "omiinaya@gmail.com" },
 ]
