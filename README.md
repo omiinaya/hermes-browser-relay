@@ -79,6 +79,8 @@ All tools accept an optional `tab_id` parameter for multi-tab routing.
 | **Compound** | `browser_do` — execute 18 action types in one call |
 | **Utility** | `browser_status`, `browser_console`, `browser_send_cdp`, `browser_wait_selector`, `browser_wait_for_navigation`, `browser_dismiss_dialog`, `browser_get_downloads` |
 
+> **Keeping the count accurate:** When adding/removing tools, update both the table above AND the count in the "46" references throughout this file. The count is verified manually — there is no automated badge.
+
 ---
 
 ## CLI (`cdp.py`)

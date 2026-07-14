@@ -7,61 +7,60 @@ on:
     branches: [master, main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff check
+        run: make lint
+
   python-tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov aiohttp websockets Pillow 'mcp>=1.0.0'
-
+        run: pip install -e ".[dev]"
       - name: Run relay server tests
-        run: python -m pytest tests/ -v --tb=short
-
+        run: make test-python
       - name: Run MCP server tests
-        run: python -m pytest mcp-server/tests/ -v --tb=short
+        run: make test-mcp
 
   extension-tests:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Install Node.js dependencies
-        run: npm install
-
+        run: make node_modules
       - name: Run extension tests
-        run: node --test tests/extensions/hermes-helper.test.js
+        run: make test-ext
 
-  lint:
+  e2e-tests:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Run ruff check
-        run: ruff check --output-format=github .
+      - name: Install Chromium
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq chromium chromium-headless-shell
+      - name: Install Python deps
+        run: pip install -e ".[dev]"
+      - name: Run E2E tests
+        run: make test-integration

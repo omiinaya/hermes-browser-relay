@@ -32,6 +32,7 @@ Quick install:
 import json
 import time
 import base64
+import os
 import subprocess
 import urllib.request
 import urllib.error
@@ -102,8 +103,8 @@ except ImportError:
 # Config
 # ---------------------------------------------------------------------------
 
-CDP_SERVER = "http://127.0.0.1:9223"
-TOOL_TIMEOUT = 60
+CDP_SERVER = os.environ.get("CDP_SERVER", "http://127.0.0.1:9223")
+TOOL_TIMEOUT = int(os.environ.get("TOOL_TIMEOUT", "60"))
 
 # Tab targeting — set before CDP calls to route to a specific tab attachment
 _shared_tab_id: int | None = None
@@ -161,14 +162,18 @@ def _ensure_relay() -> str | None:
         pass
 
     # Start the relay server
-    # Find server.py relative to this plugin file
+    # Check env var first, then search relative paths
     import os as _os
+    _env_path = _os.environ.get("RELAY_SERVER_PATH")
     _plugin_dir = _os.path.dirname(_os.path.abspath(__file__))
-    _candidates = [
-        _os.path.join(_plugin_dir, "..", "..", "server.py"),   # In repo
+    _candidates = []
+    if _env_path:
+        _candidates.append(_os.path.abspath(_os.path.expanduser(_env_path)))
+    _candidates.extend([
+        _os.path.join(_plugin_dir, "..", "..", "server.py"),   # In repo root
         _os.path.join(_plugin_dir, "..", "server.py"),         # Adjacent
         _os.path.expanduser("~/.hermes/skills/browser-relay/server.py"),  # Skill install
-    ]
+    ])
     server_script = None
     for c in _candidates:
         p = _os.path.normpath(c)
@@ -246,6 +251,28 @@ def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, *
             return {"error": str(e2)}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Shared JS snippets (used across multiple handler fallbacks)
+# ---------------------------------------------------------------------------
+
+_INTERACTIVE_SELECTORS_JS = json.dumps([
+    "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
+    "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]",
+    "[role=tab]", "[role=menuitem]", "[role=option]",
+    "[tabindex]:not([tabindex='-1'])", "summary", "details",
+    "[contenteditable=true]",
+])
+
+_SHADOW_QUERY_ALL_JS = """\
+const _shadowQueryAll = (root, sel) => {
+    let r = [];
+    try { r = Array.from(root.querySelectorAll(sel)); } catch(e) {}
+    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
+    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
+    return r;
+};"""
 
 
 # Tool Schemas (OpenAI format)
@@ -765,6 +792,1266 @@ TOOL_SCHEMAS = [
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Handler functions (one per tool)
+# ---------------------------------------------------------------------------
+
+def _handle_browser_navigate(args: dict) -> str:
+    result = _cdp("Page.navigate", {"url": args["url"]})
+    _invalidate_cache()
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    return json.dumps(result.get("result", {}), indent=2)
+
+def _handle_browser_eval(args: dict) -> str:
+    result = _cdp("Runtime.evaluate", {"expression": args["expression"], "returnByValue": True})
+    return str(_parse_result(result))
+
+def _handle_browser_hover(args: dict) -> str:
+    selector = args["selector"]
+    result = _hermes_call(
+        "hover",
+        selector,
+        fallback=f"""
+    (() => {{
+        const el = document.querySelector({json.dumps(selector)});
+        if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+        el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+        el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
+        return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return f"Error: {value['error']}"
+    return f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')})"
+
+def _handle_browser_click(args: dict) -> str:
+    selector = args["selector"]
+    result = _hermes_call(
+        "click",
+        selector,
+        fallback=f"""
+    (() => {{
+        const el = document.querySelector({json.dumps(selector)});
+        if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+        const r = el.getBoundingClientRect();
+        const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+        el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+        el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+        el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+        return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return f"Error: {value['error']}"
+    return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')})"
+
+def _handle_browser_type(args: dict) -> str:
+    selector = args["selector"]
+    text = args["text"]
+    result = _hermes_call(
+        "type",
+        selector,
+        text,
+        fallback=f"""
+    (() => {{
+        const el = document.querySelector({json.dumps(selector)});
+        if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
+        el.focus();
+        el.value = '';
+        el.select();
+        document.execCommand('insertText', false, {json.dumps(text)});
+        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return f"Error: {value['error']}"
+    return f"Typed '{text}' into {selector}"
+
+def _handle_browser_enter(args: dict) -> str:
+    _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": "Enter", "windowsVirtualKeyCode": 13})
+    _cdp("Input.dispatchKeyEvent", {"type": "char", "text": "\r"})
+    _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13})
+    return "Pressed Enter"
+
+def _handle_browser_screenshot(args: dict) -> str:
+    result = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    data = result.get("result", {}).get("data", "")
+    if data:
+        return json.dumps({"base64_png": data[:100] + "..." if len(data) > 100 else data, "size": len(data)})
+    return "No screenshot data"
+
+def _handle_browser_status(args: dict) -> str:
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/status")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.dumps(json.loads(resp.read().decode()), indent=2)
+    except Exception as e:
+        return f"CDP relay unreachable: {e}"
+
+def _handle_browser_send_cdp(args: dict) -> str:
+    result = _cdp(args["method"], args.get("params", {}))
+    return json.dumps(result, indent=2)
+
+def _handle_browser_snapshot(args: dict) -> str:
+    full = args.get("full", False)
+    cached = _get_cached_snapshot(_shared_tab_id, full)
+    if cached is not None:
+        snap = cached
+    else:
+        result = _hermes_call(
+            "snapshot",
+            full,
+            fallback=f"""
+    (() => {{
+        const selectors = {_INTERACTIVE_SELECTORS_JS};
+        {_SHADOW_QUERY_ALL_JS}
+        const all = _shadowQueryAll(document, selectors.join(','));
+        const seen = new Set();
+        const items = [];
+        let idx = 0;
+        all.forEach(el => {{
+            if (seen.has(el)) return;
+            seen.add(el);
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) return;
+            idx++;
+            const tag = el.tagName.toLowerCase();
+            const type = el.type || '';
+            const txt = (el.textContent||'').trim().substring(0, 100);
+            items.push({{
+                ref: 'e' + idx,
+                tag: tag + (type ? '[type=' + type + ']' : ''),
+                text: txt.substring(0, 80),
+                x: Math.round(r.x + r.width/2),
+                y: Math.round(r.y + r.height/2),
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                visible: r.top < window.innerHeight && r.bottom > 0,
+            }});
+        }});
+        const info = {{ title: document.title, url: location.href, viewport: {{ w: window.innerWidth, h: window.innerHeight }}, total: items.length, visible: items.filter(i => i.visible).length }};
+        let textContent = '';
+        if ({json.dumps(full)} === true) {{
+            textContent = (document.body ? document.body.innerText : '').substring(0, 30000);
+        }}
+        return {{ info, items, textContent }};
+    }})()
+    """,
+        )
+        snap = _parse_result(result)
+        if isinstance(snap, dict) and "error" in snap:
+            return f"Snapshot error: {snap['error']}"
+        _cache_snapshot(_shared_tab_id, full, snap)
+    info = snap.get("info", {})
+    items = snap.get("items", [])
+    lines = [
+        f"📄 {info.get('title', '?')}",
+        f"🌐 {info.get('url', '?')}",
+        f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements",
+        "",
+    ]
+    for it in items[:60]:
+        vis = "⬆ " if not it["visible"] else ""
+        label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it["tag"]
+        lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
+    if len(items) > 60:
+        lines.append(f"  ... and {len(items) - 60} more")
+    if full:
+        text_content = snap.get("textContent", "")
+        lines.extend(["", "--- Page Text ---", str(text_content)[:20000]])
+    return "\n".join(lines)
+
+def _handle_browser_scroll(args: dict) -> str:
+    direction = args.get("direction", "down")
+    amount = args.get("amount", 0)
+    _hermes_call(
+        "scrollBy",
+        direction,
+        amount,
+        fallback=f"""
+    (() => {{
+        const dir = {json.dumps(direction)};
+        let amt = {amount or 0};
+        if (!amt) {{ amt = Math.round(window.innerHeight / 2); }}
+        const dx = dir === 'right' ? amt : (dir === 'left' ? -amt : 0);
+        const dy = dir === 'down' ? amt : (dir === 'up' ? -amt : 0);
+        window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+        return {{ ok: true, direction: dir, amount: amt }};
+    }})()
+    """,
+    )
+    return f"Scrolled {direction} by {abs(amount or 400)}px"
+
+def _handle_browser_wait_selector(args: dict) -> str:
+    selector = args["selector"]
+    timeout = min(args.get("timeout", 15), 60)
+    state = args.get("state", "visible")
+    result = _hermes_call(
+        "waitSelector",
+        selector,
+        timeout,
+        state,
+        fallback=f"""
+    (() => {{
+        const deadline = Date.now() + {timeout * 1000};
+        while (Date.now() < deadline) {{
+            const el = document.querySelector({json.dumps(selector)});
+            if (el) {{
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return {{ ok: true }};
+            }}
+        }}
+        return {{ error: 'Timeout' }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and value.get("ok"):
+        return f"Selector '{selector}' matched"
+    return f"Timed out ({timeout}s) waiting for '{selector}'"
+
+def _handle_browser_click_text(args: dict) -> str:
+    text_query = args["text"]
+    tag_filter = args.get("tag", "")
+    result = _hermes_call(
+        "clickText",
+        text_query,
+        tag_filter,
+        fallback=f"""
+    (() => {{
+        const q = {json.dumps(text_query)}.toLowerCase();
+        const tag = {json.dumps(tag_filter)};
+        {_SHADOW_QUERY_ALL_JS}
+        const all = _shadowQueryAll(document, 'a, button, span, label, div[role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], select, [onclick], [tabindex]');
+        for (const el of all) {{
+            if (tag && el.tagName.toLowerCase() !== tag) continue;
+            const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+            if (txt.includes(q)) {{
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+                el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
+                return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
+            }}
+        }}
+        return {{ error: 'No element found with text: ' + q }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return f"Error: {value['error']}"
+    return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) by text"
+
+def _handle_browser_fill_by_label(args: dict) -> str:
+    label = args["label"]
+    text = args["text"]
+    result = _hermes_call(
+        "fillByLabel",
+        label,
+        text,
+        fallback=f"""
+    (() => {{
+        const search = {json.dumps(label)}.toLowerCase();
+        {_SHADOW_QUERY_ALL_JS}
+        let input = null;
+        for (const lbl of _shadowQueryAll(document, 'label')) {{
+            if ((lbl.textContent||'').trim().toLowerCase().includes(search)) {{
+                const forId = lbl.getAttribute('for');
+                if (forId) input = document.getElementById(forId) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
+                else input = lbl.querySelector('input, textarea, select');
+                if (input) break;
+            }}
+        }}
+        if (!input) {{
+            for (const el of _shadowQueryAll(document, 'input, textarea')) {{
+                const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+                if (ph.toLowerCase().includes(search)) {{ input = el; break; }}
+            }}
+        }}
+        if (!input) {{
+            for (const el of _shadowQueryAll(document, 'input, textarea')) {{
+                if ((el.getAttribute('name') || '').toLowerCase().includes(search)) {{ input = el; break; }}
+            }}
+        }}
+        if (!input) return {{ error: 'Could not find input for: ' + search }};
+        input.focus();
+        input.value = '';
+        input.select();
+        document.execCommand('insertText', false, {json.dumps(text)});
+        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        return {{ ok: true, tag: input.tagName, type: input.type || '' }};
+    }})()
+    """,
+    )
+    fill_result = _parse_result(result)
+    if isinstance(fill_result, dict) and "error" in fill_result:
+        return f"Error: {fill_result['error']}"
+    return f"Filled '{label}' with '{text}'"
+
+def _handle_browser_get_text(args: dict) -> str:
+    result = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0, 50000) : ''")
+    return str(_parse_result(result))
+
+def _handle_browser_recent_events(args: dict) -> str:
+    limit = min(args.get("limit", 20), 200)
+    mode = args.get("mode", "nav")
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit}&mode={mode}")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            result = json.loads(r.read().decode())
+        ev_count = result.get("count", 0)
+        events = result.get("events", [])
+        lines = [f"📊 {ev_count} recent events:", ""]
+        for e in events:
+            etype = e.get("type", "?")
+            if etype == "tab":
+                lines.append(f"  🏁 NAV: {e.get('url', '')[:120]}")
+            elif etype == "download":
+                lines.append(f"  📥 DOWNLOAD: {e.get('filename', e.get('url', ''))[:120]}")
+            elif etype == "webrequest" and e.get("event") in ("completed", "error"):
+                lines.append(f"  🌐 {e['event']}: {e.get('method', '?')} {e.get('statusCode', '?')} {e.get('url', '')[:100]}")
+            elif etype == "response_body":
+                lines.append(f"  📄 BODY: {e.get('url', '')[:100]}")
+        if len(lines) <= 2:
+            lines.append("  (no events yet)")
+        return "\n".join(lines)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_key(args: dict) -> str:
+    key = args.get("key", "Escape")
+    _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
+    _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
+    return f"Pressed {key}"
+
+def _handle_browser_back(args: dict) -> str:
+    _hermes_call("historyBack", fallback="window.history.back()")
+    _invalidate_cache()
+    return "Navigated back"
+
+def _handle_browser_console(args: dict) -> str:
+    limit = min(args.get("limit", 20), 200)
+    # Ensure Runtime domain is enabled (safe to send repeatedly)
+    _cdp("Runtime.enable", timeout=5)
+    # Query capture buffer for console events
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            result = json.loads(r.read().decode())
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+    events = result.get("events", [])
+    # Filter for Runtime.consoleAPICalled events
+    console_events = [e for e in events if e.get("type") == "event" and e.get("method") == "Runtime.consoleAPICalled"]
+    console_events = console_events[:limit]
+    if not console_events:
+        return "No console messages captured yet. Try navigating to a page and running JavaScript that calls console.log()."
+    lines = [f"📋 {len(console_events)} recent console messages:", ""]
+    for e in console_events:
+        params = e.get("params", {})
+        level = params.get("type", "log")
+        args_list = params.get("args", [])
+        text_parts = []
+        for arg in args_list:
+            arg_type = arg.get("type", "")
+            if arg_type == "string":
+                text_parts.append(arg.get("value", ""))
+            elif arg_type in ("number", "boolean"):
+                text_parts.append(str(arg.get("value", "")))
+            elif arg_type == "undefined":
+                text_parts.append("undefined")
+            elif arg_type == "object":
+                preview = arg.get("preview", {})
+                if preview and preview.get("description"):
+                    text_parts.append(str(preview.get("description", "")))
+                else:
+                    text_parts.append(str(arg.get("description", "[Object]")))
+            else:
+                text_parts.append(str(arg.get("description", arg.get("value", str(arg)))))
+        msg_text = " ".join(text_parts)
+        icon = {"log": "📝", "warning": "⚠️", "error": "❌", "debug": "🔍", "info": "ℹ️"}.get(level, "📝")
+        lines.append(f"  {icon} [{level}] {msg_text[:300]}")
+    return "\n".join(lines)
+
+def _handle_browser_list_tabs(args: dict) -> str:
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        if "error" in result:
+            return json.dumps({"error": result["error"]})
+        tabs = result.get("tabs", [])
+        if not tabs:
+            return "No tabs found."
+        lines = [f"📑 {len(tabs)} open tabs:", ""]
+        for t in tabs:
+            active = "🟢" if t.get("active") else "  "
+            title = (t.get("title", "") or "").strip()[:60]
+            url = (t.get("url", "") or "").strip()[:80]
+            lines.append(f"  {active} [{t['id']}] {title}")
+            lines.append(f"              {url}")
+        return "\n".join(lines)
+    except Exception as e:
+        return json.dumps({"error": f"Error listing tabs: {e}"})
+
+def _handle_browser_attach_tab(args: dict) -> str:
+    tab_id = args.get("tab_id")
+    keyword = args.get("keyword")
+    if not tab_id and not keyword:
+        return "Provide either tab_id or keyword to find the tab."
+    if keyword and not tab_id:
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+            kw = keyword.lower()
+            matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
+            if not matches:
+                return f"No tab found matching '{keyword}'"
+            tab_id = matches[0]["id"]
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+    body = json.dumps({"tabId": tab_id}).encode()
+    req = urllib.request.Request(f"{CDP_SERVER}/tabs/attach", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("success"):
+            return f"🔗 Attached to tab {tab_id} ({result.get('attachmentCount', '?')} total)"
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_detach_tab(args: dict) -> str:
+    tab_id = args.get("tab_id")
+    if not tab_id:
+        return "Provide tab_id to detach."
+    body = json.dumps({"tabId": tab_id}).encode()
+    req = urllib.request.Request(f"{CDP_SERVER}/tabs/detach", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("success"):
+            return f"🔌 Detached from tab {tab_id} ({result.get('attachmentCount', '?')} remaining)"
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_list_attachments(args: dict) -> str:
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/tabs/attachments")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read().decode())
+        attached = result.get("attachments", [])
+        if not attached:
+            return "No tabs currently attached."
+        lines = [f"🔗 {len(attached)} attached tab(s):", ""]
+        for a in attached:
+            lines.append(f"  [{a['tabId']}]")
+        return "\n".join(lines)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_switch_tab(args: dict) -> str:
+    tab_id = args.get("tab_id")
+    keyword = args.get("keyword")
+    if not tab_id and not keyword:
+        return "Provide either tab_id or keyword to find the tab."
+
+    # If keyword given, find matching tab first
+    if keyword and not tab_id:
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}/tabs")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            kw = keyword.lower()
+            matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
+            if not matches:
+                return f"No tab found matching '{keyword}'"
+            tab_id = matches[0]["id"]
+            if len(matches) > 1:
+                return f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
+                    f"  [{t['id']}] {t.get('title', '')[:60]}" for t in matches
+                )
+        except Exception as e:
+            return json.dumps({"error": f"Error searching tabs: {e}"})
+
+    body = json.dumps({"tabId": tab_id}).encode()
+    switch_req = urllib.request.Request(f"{CDP_SERVER}/tabs/switch", data=body, method="POST")
+    switch_req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(switch_req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("success"):
+            return f"✅ Switched to tab {tab_id}"
+        return f"Switch failed: {result.get('error', 'unknown')}"
+    except Exception as e:
+        return json.dumps({"error": f"Error switching tab: {e}"})
+
+def _handle_browser_get_cookies(args: dict) -> str:
+    result = _cdp("Network.getCookies")
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    cookies = result.get("result", {}).get("cookies", [])
+    if not cookies:
+        return "No cookies for the current page."
+    lines = [f"🍪 {len(cookies)} cookies:", ""]
+    for c in cookies:
+        name = c.get("name", "?")
+        value = c.get("value", "")
+        domain = c.get("domain", "")
+        path = c.get("path", "")
+        httponly = "🔒" if c.get("httpOnly") else "  "
+        secure = "🔐" if c.get("secure") else "  "
+        session = "📄" if c.get("session") else "⏳"
+        expiry = ""
+        if not c.get("session"):
+            import datetime
+
+            exp = c.get("expires", 0)
+            if exp:
+                try:
+                    expiry = f" (expires {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d')})"
+                except Exception:
+                    expiry = ""
+        lines.append(f"  {httponly}{secure}{session} {name}={value[:80]}{expiry}")
+        lines.append(f"         Domain: {domain}{path}")
+    return "\n".join(lines)
+
+def _handle_browser_clear_cookies(args: dict) -> str:
+    result = _cdp("Network.clearBrowserCookies")
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    return "🧹 All cookies cleared."
+
+def _handle_browser_get_downloads(args: dict) -> str:
+    limit = min(args.get("limit", 20), 50)
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            dl_result = json.loads(r.read().decode())
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+    events = dl_result.get("events", [])
+    dl_events = [e for e in events if e.get("type") == "download"]
+    dl_events = dl_events[:limit]
+    if not dl_events:
+        return "No recent downloads captured."
+    lines = [f"📥 {len(dl_events)} recent downloads:", ""]
+    for d in dl_events:
+        evt = d.get("event", "?")
+        icon = "🆕" if evt == "created" else "✅" if evt == "changed" else "📄"
+        filename = d.get("filename", d.get("url", "?")).split("/")[-1][:60]
+        url = (d.get("url", "") or "")[:80]
+        state = d.get("state", "")
+        total = d.get("totalBytes", 0)
+        lines.append(f"  {icon} {filename}")
+        lines.append(f"     {url}")
+        if state:
+            lines.append(f"     State: {state}")
+        if total:
+            lines.append(f"     Size: {total} bytes")
+    return "\n".join(lines)
+
+def _handle_browser_refresh(args: dict) -> str:
+    hard = args.get("hard_reload", False)
+    result = _cdp("Page.reload", {"ignoreCache": hard})
+    _invalidate_cache()
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    return "🔄 Page reloaded" + (" (hard)" if hard else "")
+
+def _handle_browser_forward(args: dict) -> str:
+    _hermes_call("historyForward", fallback="window.history.forward()")
+    _invalidate_cache()
+    return "Navigated forward"
+
+def _handle_browser_get_title(args: dict) -> str:
+    result = _hermes_call("docInfo", fallback="({ title: document.title, url: location.href })")
+    value = _parse_result(result)
+    if isinstance(value, dict):
+        return f"📄 {value.get('title', '?')}\n🌐 {value.get('url', '?')}"
+    return f"📄 {value}"
+
+def _handle_browser_find(args: dict) -> str:
+    query = args["query"]
+    result = _hermes_call(
+        "find",
+        query,
+        fallback=f"""
+    (() => {{
+        const q = {json.dumps(query)}.toLowerCase();
+        const selectors = {_INTERACTIVE_SELECTORS_JS};
+        {_SHADOW_QUERY_ALL_JS}
+        const all = _shadowQueryAll(document, selectors.join(','));
+        const seen = new Set();
+        const results = [];
+        let idx = 0;
+        all.forEach(el => {{
+            if (seen.has(el)) return;
+            seen.add(el);
+            const txt = (el.textContent||'').trim();
+            const aria = el.getAttribute('aria-label') || '';
+            const placeholder = el.placeholder || '';
+            const name = el.getAttribute('name') || '';
+            const val = el.value || '';
+            const textSources = [txt, aria, placeholder, name, val];
+            let matched = false;
+            for (const s of textSources) {{ if (s.toLowerCase().includes(q)) {{ matched = true; break; }} }}
+            if (!matched) return;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) return;
+            idx++;
+            results.push({{ ref: 'e'+idx, tag: el.tagName.toLowerCase(), text: txt.substring(0,120), x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
+        }});
+        return {{ count: results.length, results: results }};
+    }})()
+    """,
+    )
+    find_result = _parse_result(result)
+    if isinstance(find_result, dict) and "error" in find_result:
+        return json.dumps({"error": find_result["error"]})
+    count = find_result.get("count", 0)
+    items = find_result.get("results", [])
+    if count == 0:
+        return f"No elements found matching '{query}'"
+    lines = [f"🔍 {count} element(s) matching '{query}':", ""]
+    for it in items:
+        vis = "" if it["visible"] else "⬆"
+        lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{it["text"][:70]}" @({it["x"]},{it["y"]})')
+    return "\n".join(lines)
+
+def _handle_browser_block_patterns(args: dict) -> str:
+    patterns = args.get("patterns", [])
+    if not isinstance(patterns, list):
+        return json.dumps({"error": "patterns must be an array of strings"})
+    body = json.dumps({"patterns": patterns}).encode()
+    req = urllib.request.Request(f"{CDP_SERVER}/block/patterns", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("success"):
+            if patterns:
+                return f"🚫 Blocking {len(patterns)} patterns: {', '.join(patterns[:10])}"
+            return "✅ All blocking patterns cleared"
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_select_option(args: dict) -> str:
+    selector = args["selector"]
+    text = args["text"]
+    result = _hermes_call(
+        "selectOption",
+        selector,
+        text,
+        fallback=f"""
+    (() => {{
+        const select = document.querySelector({json.dumps(selector)});
+        if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
+        if (select.tagName !== 'SELECT') return {{ error: 'Element is not a <select>' }};
+        const options = Array.from(select.options);
+        const q = {json.dumps(text)}.trim().toLowerCase();
+        const target = options.find(o => (o.text||'').trim().toLowerCase() === q);
+        if (!target) return {{ error: 'Option not found with text: ' + {json.dumps(text)} }};
+        select.value = target.value;
+        select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        select.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return f"Error: {value['error']}"
+    return f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'"
+
+def _handle_browser_screenshot_annotated(args: dict) -> str:
+    # Get interactive elements via __hermes.snapshot (avoids inline JS through CDP)
+    annotate_result = _hermes_call(
+        "snapshot",
+        False,
+        fallback=f"""
+    (() => {{
+        const selectors = {_INTERACTIVE_SELECTORS_JS};
+        {_SHADOW_QUERY_ALL_JS}
+        const all = _shadowQueryAll(document, selectors.join(','));
+        const seen = new Set();
+        const items = [];
+        let idx = 0;
+        all.forEach(el => {{
+            if (seen.has(el)) return;
+            seen.add(el);
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) return;
+            idx++;
+            const txt = (el.textContent||'').trim().substring(0, 100);
+            const placeholder = el.placeholder || '';
+            const aria = el.getAttribute('aria-label') || '';
+            const name = el.getAttribute('name') || '';
+            items.push({{ ref: 'e' + idx, tag: el.tagName.toLowerCase(), text: txt, placeholder: placeholder, aria_label: aria, name: name, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
+        }});
+        return {{ info: {{ total: items.length, visible: items.filter(i => i.visible).length }}, items: items }};
+    }})()
+    """,
+    )
+    snap = _parse_result(annotate_result)
+    all_items = snap.get("items", [])
+    annotations = [it for it in all_items if it.get("visible") and it.get("x")][:50]
+    shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+    data = shot.get("result", {}).get("data", "")
+    lines = ["📸 Annotated screenshot — interactive elements:", ""]
+    for a in annotations if isinstance(annotations, list) else []:
+        lines.append(f'  [{a["ref"]}] "{a["text"][:50]}" @({a["x"]},{a["y"]})')
+    if data:
+        import os
+
+        img_dir = os.path.expanduser("~/.hermes/image_cache")
+        os.makedirs(img_dir, exist_ok=True)
+        img_path = os.path.join(img_dir, f"annotated_{int(__import__('time').time())}.png")
+        with open(img_path, "wb") as f:
+            f.write(base64.b64decode(data))
+        return "MEDIA:" + img_path + "\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+def _handle_browser_pdf(args: dict) -> str:
+    landscape = args.get("landscape", False)
+    scale = args.get("scale", 1.0)
+    params = {
+        "landscape": landscape,
+        "scale": scale,
+        "printBackground": True,
+        "preferCSSPageSize": True,
+        "paperWidth": 8.27,
+        "paperHeight": 11.69,
+    }
+    result = _cdp("Page.printToPDF", params)
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    data = result.get("result", {}).get("data", "")
+    if data:
+        pdf_bytes = base64.b64decode(data)
+        return json.dumps(
+            {
+                "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
+                "size": len(pdf_bytes),
+                "mime": "application/pdf",
+            },
+            indent=2,
+        )
+    return "No PDF data returned"
+
+def _handle_browser_wait_for_navigation(args: dict) -> str:
+    import time as _wt
+
+    tab_id = args.get("tab_id")
+    timeout = min(args.get("timeout", 30), 120)
+    start_ts = _wt.time() * 1000
+    url = f"{CDP_SERVER}/wait-nav?since={start_ts}"
+    if tab_id is not None:
+        url += f"&tab_id={tab_id}"
+    url += f"&timeout={timeout}"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout + 5) as r:
+            result = json.loads(r.read().decode())
+        if result.get("navigated"):
+            result["elapsed"] = round((_wt.time() * 1000 - start_ts) / 1000, 2)
+        else:
+            result["elapsed"] = timeout
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "navigated": False,
+            "error": str(e),
+            "elapsed": round((_wt.time() * 1000 - start_ts) / 1000, 2),
+        }, indent=2)
+
+def _handle_browser_network_requests(args: dict) -> str:
+    ev_filter = args.get("event", "")
+    since = args.get("since", 0)
+    limit = min(args.get("limit", 20), 100)
+    try:
+        qs = f"{CDP_SERVER}/recent?mode=all&type=webrequest&limit={limit}"
+        if since:
+            qs += f"&since={since}"
+        req = urllib.request.Request(qs)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            result = json.loads(r.read().decode())
+        events = result.get("events", [])
+        if ev_filter:
+            events = [e for e in events if e.get("event") == ev_filter]
+        lines = [f"🌐 {len(events)} network requests:", ""]
+        for e in events[:limit]:
+            ev = e.get("event", "?")
+            method = e.get("method", "?")
+            status = e.get("statusCode", "?")
+            url = e.get("url", "")[:100]
+            lines.append(f"  {ev.upper()} {method} {status} {url}")
+        if len(lines) <= 2:
+            lines.append("  (no matching network requests found)")
+        return "\n".join(lines)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_response_body(args: dict) -> str:
+    since = args.get("since", 0)
+    limit = min(args.get("limit", 5), 20)
+    try:
+        qs = f"{CDP_SERVER}/recent?mode=all&type=response_body&limit={limit}"
+        if since:
+            qs += f"&since={since}"
+        req = urllib.request.Request(qs)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            result = json.loads(r.read().decode())
+        events = result.get("events", [])
+        include_body = args.get("include_body", False)
+        lines = [f"📄 {len(events)} captured response bodies:", ""]
+        for e in events[:limit]:
+            url = e.get("url", "")[:100]
+            mime = e.get("mimeType", "?")
+            body = e.get("body", "")
+            b64 = e.get("base64Encoded", False)
+            size = len(body)
+            lines.append(f"  {url}")
+            lines.append(f"     MIME: {mime}  Size: {size}  Base64: {b64}")
+            if include_body and body:
+                snippet = body[:500]
+                if b64:
+                    try:
+                        snippet = base64.b64decode(body[:500]).decode("utf-8", errors="replace")[:500]
+                    except Exception:
+                        pass
+                lines.append(f"     Body: {snippet}")
+        if len(lines) <= 2:
+            lines.append("  (no response bodies captured yet)")
+        return "\n".join(lines)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_set_cookie(args: dict) -> str:
+    params = {
+        "name": args["name"],
+        "value": args["value"],
+    }
+    if "url" in args:
+        params["url"] = args["url"]
+    if "domain" in args:
+        params["domain"] = args["domain"]
+    if "path" in args:
+        params["path"] = args["path"]
+    if args.get("secure"):
+        params["secure"] = True
+    if args.get("httpOnly"):
+        params["httpOnly"] = True
+    if "sameSite" in args:
+        params["sameSite"] = args["sameSite"]
+    result = _cdp("Network.setCookie", params)
+    if "error" in result:
+        return json.dumps({"error": result["error"]})
+    r = result.get("result", {})
+    success = r.get("success", False)
+    return json.dumps(
+        {
+            "success": success,
+            "cookie": params.get("name"),
+            "domain": params.get("domain", params.get("url", "any")),
+        },
+        indent=2,
+    )
+
+def _handle_browser_upload_file(args: dict) -> str:
+    selector = args["selector"]
+    file_paths = args["file_paths"]
+    if not isinstance(file_paths, list):
+        file_paths = [file_paths]
+    # Validate the file input exists via JS
+    find_js = f"""
+    (() => {{
+        const el = document.querySelector({json.dumps(selector)});
+        if (!el) return {{ error: 'File input not found: ' + {json.dumps(selector)} }};
+        if (el.tagName !== 'INPUT' || (el.type !== 'file' && el.getAttribute('type') !== 'file'))
+            return {{ error: 'Not a file input: ' + el.tagName + ' type=' + (el.type || 'none') }};
+        return {{ found: true }};
+    }})()
+    """
+    check = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True}))
+    if isinstance(check, dict) and "error" in check:
+        return f"Error: {check['error']}"
+    # Get the backend node ID
+    doc_result = _cdp("DOM.getDocument", {"depth": 0})
+    if "error" in doc_result:
+        return f"Error getting DOM: {doc_result['error']}"
+    node_id_result = _cdp("DOM.querySelector", {"nodeId": doc_result["result"]["root"]["nodeId"], "selector": selector})
+    if "error" in node_id_result:
+        return f"Error finding node: {node_id_result['error']}"
+    node_id = node_id_result.get("result", {}).get("nodeId")
+    if not node_id:
+        return f"Error: Could not find node for selector: {selector}"
+    files_result = _cdp("DOM.setFileInputFiles", {"nodeId": node_id, "files": file_paths})
+    if "error" in files_result:
+        return f"Error setting files: {files_result['error']}"
+    return json.dumps({"success": True, "files": file_paths}, indent=2)
+
+def _handle_browser_dismiss_dialog(args: dict) -> str:
+    accept = args.get("accept", True)
+    params = {"accept": accept}
+    if "prompt_text" in args:
+        params["promptText"] = args["prompt_text"]
+    result = _cdp("Page.handleJavaScriptDialog", params)
+    if "error" in result:
+        return f"Error dismissing dialog: {result['error']}"
+    return json.dumps({"accepted": accept, "success": True}, indent=2)
+
+def _handle_browser_form_fill(args: dict) -> str:
+    fields = args["fields"]
+    result = _hermes_call(
+        "formFill",
+        fields,
+        fallback=f"""
+    (() => {{
+        var fields = {json.dumps(fields)};
+        var errors = [];
+        var completed = 0;
+        var keys = Object.keys(fields);
+        {_SHADOW_QUERY_ALL_JS}
+        for (var i = 0; i < keys.length; i++) {{
+            var identifier = keys[i];
+            var value = fields[identifier];
+            var valueStr = String(value);
+            var isSelector = identifier.charCodeAt(0) === 35 || identifier.charCodeAt(0) === 46 || identifier.charCodeAt(0) === 91 || identifier.charCodeAt(0) === 58 || identifier.indexOf(' ') > 0 || identifier.indexOf('input[') === 0;
+            var el = null;
+            if (isSelector) {{
+                el = document.querySelector(identifier);
+            }} else {{
+                var s = identifier.toLowerCase();
+                var labels = _shadowQueryAll(document, 'label');
+                for (var li = 0; li < labels.length; li++) {{
+                    var lbl = labels[li];
+                    if ((lbl.textContent||'').trim().toLowerCase().indexOf(s) !== -1) {{
+                        var fid = lbl.getAttribute('for');
+                        if (fid) el = document.getElementById(fid);
+                        else el = lbl.querySelector('input,textarea,select');
+                        if (el) break;
+                    }}
+                }}
+                if (!el) {{
+                    var allInp = _shadowQueryAll(document, 'input,textarea');
+                    for (var pi = 0; pi < allInp.length; pi++) {{
+                        var ph = allInp[pi].getAttribute('placeholder') || allInp[pi].getAttribute('aria-label') || '';
+                        if (ph.toLowerCase().indexOf(s) !== -1) {{ el = allInp[pi]; break; }}
+                    }}
+                }}
+                if (!el) {{
+                    var allInp2 = _shadowQueryAll(document, 'input,textarea');
+                    for (var ni = 0; ni < allInp2.length; ni++) {{
+                        if ((allInp2[ni].getAttribute('name')||'').toLowerCase().indexOf(s) !== -1) {{ el = allInp2[ni]; break; }}
+                    }}
+                }}
+            }}
+            if (!el) {{
+                errors.push({{field: identifier, error: 'Field not found'}});
+                continue;
+            }}
+            if (el.tagName === 'SELECT') {{
+                var opts = Array.from(el.options);
+                var found = false;
+                for (var j = 0; j < opts.length; j++) {{
+                    if (opts[j].value === valueStr || opts[j].text.indexOf(valueStr) !== -1) {{
+                        el.value = opts[j].value;
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        completed++;
+                        found = true;
+                        break;
+                    }}
+                }}
+                if (!found) errors.push({{field: identifier, error: 'Option not found'}});
+                continue;
+            }}
+            el.focus(); el.value = ''; el.select();
+            document.execCommand('insertText', false, valueStr);
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            completed++;
+        }}
+        return {{completed: completed, errors: errors}};
+    }})()
+    """,
+    )
+    value = _parse_result(result)
+    if isinstance(value, dict) and "error" in value:
+        return json.dumps(value, indent=2)
+    if isinstance(value, dict):
+        return json.dumps(value, indent=2)
+    return str(value)
+
+def _handle_browser_create_tab(args: dict) -> str:
+    url = args.get("url", "about:blank")
+    active = args.get("active", True)
+    try:
+        req = urllib.request.Request(
+            f"{CDP_SERVER}/tabs/create",
+            data=json.dumps({"url": url, "active": active}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_close_tab(args: dict) -> str:
+    tab_id = args["tab_id"]
+    try:
+        req = urllib.request.Request(
+            f"{CDP_SERVER}/tabs/close",
+            data=json.dumps({"tabId": tab_id}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def _handle_browser_do(args: dict) -> str:
+    actions = args.get("actions", [])
+    if not actions or not isinstance(actions, list):
+        return json.dumps({"error": "actions must be a non-empty array"})
+    results = []
+    for act in actions:
+        action = act.get("action", "")
+        try:
+            if action == "navigate":
+                _cdp("Page.navigate", {"url": act["url"]})
+                results.append(f"Navigated to {act.get('url', '?')}")
+            elif action == "navigate_wait":
+                url = act["url"]
+                to = min(act.get("timeout", 15), 60)
+                _cdp("Page.navigate", {"url": url})
+                import time as _nwt
+
+                deadline = _nwt.time() + to
+                title = "?"
+                while _nwt.time() < deadline:
+                    ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
+                    if isinstance(ready, dict):
+                        title = ready.get("title", "?")
+                        if ready.get("readyState") == "complete":
+                            break
+                    _nwt.sleep(0.3)
+                wait_for = act.get("wait_for")
+                if wait_for:
+                    ws_v = _parse_result(_hermes_call("waitSelector", wait_for, to, "visible"))
+                    if isinstance(ws_v, dict) and ws_v.get("ok"):
+                        results.append(f"Navigate-wait: '{title}' loaded, '{wait_for}' visible")
+                    else:
+                        results.append(f"Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
+                else:
+                    results.append(f"Navigate-wait: '{title}' loaded")
+            elif action == "wait_selector":
+                sel = act["selector"]
+                to = min(act.get("timeout", 10), 60)
+                ws_r = _hermes_call(
+                    "waitSelector",
+                    sel,
+                    to,
+                    "visible",
+                    fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to * 1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()",
+                )
+                r = _parse_result(ws_r)
+                results.append(f"Wait: '{sel}' {'visible' if isinstance(r, dict) and r.get('ok') else 'timeout'}")
+            elif action == "click":
+                sel = act["selector"]
+                cr = _hermes_call("click", sel)
+                v = _parse_result(cr)
+                results.append(f"Clicked '{sel}'" if isinstance(v, dict) and v.get("ok") else f"Click failed: {v}")
+            elif action == "type":
+                sel = act["selector"]
+                txt = act["text"]
+                _hermes_call("type", sel, txt)
+                results.append(f"Typed into '{sel}'")
+            elif action == "enter":
+                _hermes_call("key", "Enter")
+                results.append("Pressed Enter")
+            elif action == "hover":
+                sel = act["selector"]
+                hv_r = _hermes_call("hover", sel)
+                hv_v = _parse_result(hv_r)
+                results.append(f"Hovered '{sel}'" if isinstance(hv_v, dict) and hv_v.get("ok") else f"Hover failed: {hv_v}")
+            elif action == "click_text":
+                text_query = act["text"]
+                tag_filter = act.get("tag", "")
+                ct_r = _hermes_call("clickText", text_query, tag_filter)
+                ct_v = _parse_result(ct_r)
+                results.append(f"Clicked text '{text_query}'" if isinstance(ct_v, dict) and "error" not in ct_v else f"Click-text failed: {ct_v}")
+            elif action == "key":
+                k = act.get("key", "Escape")
+                _hermes_call("key", k)
+                results.append(f"Pressed {k}")
+            elif action == "screenshot":
+                shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+                results.append("Screenshot captured" if "error" not in shot else "Screenshot failed")
+            elif action == "fill_by_label":
+                lbl = act["label"]
+                txt = act["text"]
+                fl_r = _hermes_call("fillByLabel", lbl, txt)
+                fl_v = _parse_result(fl_r)
+                results.append(f"Filled '{lbl}'" if isinstance(fl_v, dict) and "error" not in fl_v else f"Fill failed: {fl_v}")
+            elif action == "scroll":
+                d = act.get("direction", "down")
+                a = act.get("amount", 0)
+                _hermes_call("scrollBy", d, a)
+                results.append(f"Scrolled {d}")
+            elif action == "back":
+                _hermes_call("historyBack", fallback="window.history.back()")
+                _invalidate_cache()
+                results.append("Navigated back")
+            elif action == "forward":
+                _hermes_call("historyForward", fallback="window.history.forward()")
+                _invalidate_cache()
+                results.append("Navigated forward")
+            elif action == "eval":
+                expr = act["expression"]
+                r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
+                results.append(f"eval: {str(r)[:200]}")
+            elif action == "snapshot":
+                full = act.get("full", False)
+                sn_r = _hermes_call("snapshot", full)
+                sn_v = _parse_result(sn_r)
+                if isinstance(sn_v, dict):
+                    info = sn_v.get("info", {})
+                    results.append(f"Snapshot: {info.get('visible', 0)}/{info.get('total', 0)} elements")
+                else:
+                    results.append("Snapshot error")
+            elif action == "get_text":
+                gt_r = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0,10000) : ''")
+                txt = str(_parse_result(gt_r))[:300]
+                results.append(f"Text: {txt}")
+            elif action == "wait":
+                import time
+
+                time.sleep(min(act.get("seconds", 1), 10))
+                results.append(f"Waited {act.get('seconds', 1)}s")
+            else:
+                results.append(f"Unknown action: {action}")
+        except Exception as e:
+            results.append(f"Error in '{action}': {e}")
+    return json.dumps({"completed": len(actions), "steps": results})
+
+def _handle_browser_navigate_wait(args: dict) -> str:
+    url = args["url"]
+    timeout = min(args.get("timeout", 15), 60)
+    nav_result = _cdp("Page.navigate", {"url": url})
+    _invalidate_cache()
+    if "error" in nav_result:
+        return json.dumps({"error": nav_result["error"]})
+    import time as _t
+
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
+        if isinstance(ready, dict) and ready.get("readyState") == "complete":
+            title = ready.get("title", "?")
+            do_snap = args.get("snapshot", True)
+            if do_snap:
+                snap_data = _parse_result(_hermes_call("snapshot", False))
+            else:
+                snap_data = None
+            lines = [f"✅ Loaded: {title}", f"🌐 {url}"]
+            if isinstance(snap_data, dict) and "error" not in snap_data:
+                info = snap_data.get("info", {})
+                items = snap_data.get("items", [])
+                lines.append(
+                    f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements"
+                )
+                lines.append("")
+                for it in items[:60]:
+                    vis = "" if it["visible"] else "⬆"
+                    label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it.get("name", "") or it.get("href", "") or it["tag"]
+                    lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
+                if len(items) > 50:
+                    lines.append(f"  ... and {len(items) - 50} more")
+            return "\n".join(lines)
+        _t.sleep(0.3)
+    return f"Timed out loading: {url}"
+
+
+HANDLER_MAP: dict[str, callable] = {
+    "browser_navigate": _handle_browser_navigate,
+    "browser_eval": _handle_browser_eval,
+    "browser_hover": _handle_browser_hover,
+    "browser_click": _handle_browser_click,
+    "browser_type": _handle_browser_type,
+    "browser_enter": _handle_browser_enter,
+    "browser_screenshot": _handle_browser_screenshot,
+    "browser_status": _handle_browser_status,
+    "browser_send_cdp": _handle_browser_send_cdp,
+    "browser_snapshot": _handle_browser_snapshot,
+    "browser_scroll": _handle_browser_scroll,
+    "browser_wait_selector": _handle_browser_wait_selector,
+    "browser_click_text": _handle_browser_click_text,
+    "browser_fill_by_label": _handle_browser_fill_by_label,
+    "browser_get_text": _handle_browser_get_text,
+    "browser_recent_events": _handle_browser_recent_events,
+    "browser_key": _handle_browser_key,
+    "browser_back": _handle_browser_back,
+    "browser_console": _handle_browser_console,
+    "browser_list_tabs": _handle_browser_list_tabs,
+    "browser_attach_tab": _handle_browser_attach_tab,
+    "browser_detach_tab": _handle_browser_detach_tab,
+    "browser_list_attachments": _handle_browser_list_attachments,
+    "browser_switch_tab": _handle_browser_switch_tab,
+    "browser_get_cookies": _handle_browser_get_cookies,
+    "browser_clear_cookies": _handle_browser_clear_cookies,
+    "browser_get_downloads": _handle_browser_get_downloads,
+    "browser_refresh": _handle_browser_refresh,
+    "browser_forward": _handle_browser_forward,
+    "browser_get_title": _handle_browser_get_title,
+    "browser_find": _handle_browser_find,
+    "browser_block_patterns": _handle_browser_block_patterns,
+    "browser_select_option": _handle_browser_select_option,
+    "browser_screenshot_annotated": _handle_browser_screenshot_annotated,
+    "browser_pdf": _handle_browser_pdf,
+    "browser_wait_for_navigation": _handle_browser_wait_for_navigation,
+    "browser_network_requests": _handle_browser_network_requests,
+    "browser_response_body": _handle_browser_response_body,
+    "browser_set_cookie": _handle_browser_set_cookie,
+    "browser_upload_file": _handle_browser_upload_file,
+    "browser_dismiss_dialog": _handle_browser_dismiss_dialog,
+    "browser_form_fill": _handle_browser_form_fill,
+    "browser_create_tab": _handle_browser_create_tab,
+    "browser_close_tab": _handle_browser_close_tab,
+    "browser_do": _handle_browser_do,
+    "browser_navigate_wait": _handle_browser_navigate_wait,
+}
+
+
+
 class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else object):
     """Hermes memory provider that exposes browser control tools."""
 
@@ -808,1246 +2095,9 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             return json.dumps({"error": str(e)})
 
     def _dispatch(self, name: str, args: dict) -> str:
-        if name == "browser_navigate":
-            result = _cdp("Page.navigate", {"url": args["url"]})
-            _invalidate_cache()
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            return json.dumps(result.get("result", {}), indent=2)
-
-        elif name == "browser_eval":
-            result = _cdp("Runtime.evaluate", {"expression": args["expression"], "returnByValue": True})
-            return str(_parse_result(result))
-
-        elif name == "browser_hover":
-            selector = args["selector"]
-            result = _hermes_call(
-                "hover",
-                selector,
-                fallback=f"""
-            (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
-                const r = el.getBoundingClientRect();
-                el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
-                el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
-                el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
-                return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return f"Error: {value['error']}"
-            return f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')})"
-
-        elif name == "browser_click":
-            selector = args["selector"]
-            result = _hermes_call(
-                "click",
-                selector,
-                fallback=f"""
-            (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
-                const r = el.getBoundingClientRect();
-                const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
-                el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return f"Error: {value['error']}"
-            return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')})"
-
-        elif name == "browser_type":
-            selector = args["selector"]
-            text = args["text"]
-            result = _hermes_call(
-                "type",
-                selector,
-                text,
-                fallback=f"""
-            (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
-                el.focus();
-                el.value = '';
-                el.select();
-                document.execCommand('insertText', false, {json.dumps(text)});
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return f"Error: {value['error']}"
-            return f"Typed '{text}' into {selector}"
-
-        elif name == "browser_enter":
-            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": "Enter", "windowsVirtualKeyCode": 13})
-            _cdp("Input.dispatchKeyEvent", {"type": "char", "text": "\r"})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13})
-            return "Pressed Enter"
-
-        elif name == "browser_screenshot":
-            result = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            data = result.get("result", {}).get("data", "")
-            if data:
-                return json.dumps({"base64_png": data[:100] + "..." if len(data) > 100 else data, "size": len(data)})
-            return "No screenshot data"
-
-        elif name == "browser_status":
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/status")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    return json.dumps(json.loads(resp.read().decode()), indent=2)
-            except Exception as e:
-                return f"CDP relay unreachable: {e}"
-
-        elif name == "browser_send_cdp":
-            result = _cdp(args["method"], args.get("params", {}))
-            return json.dumps(result, indent=2)
-
-        elif name == "browser_snapshot":
-            full = args.get("full", False)
-            cached = _get_cached_snapshot(_shared_tab_id, full)
-            if cached is not None:
-                snap = cached
-            else:
-                result = _hermes_call(
-                    "snapshot",
-                    full,
-                    fallback=f"""
-            (() => {{
-                const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const all = _shadowQueryAll(document, selectors.join(','));
-                const seen = new Set();
-                const items = [];
-                let idx = 0;
-                all.forEach(el => {{
-                    if (seen.has(el)) return;
-                    seen.add(el);
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return;
-                    idx++;
-                    const tag = el.tagName.toLowerCase();
-                    const type = el.type || '';
-                    const txt = (el.textContent||'').trim().substring(0, 100);
-                    items.push({{
-                        ref: 'e' + idx,
-                        tag: tag + (type ? '[type=' + type + ']' : ''),
-                        text: txt.substring(0, 80),
-                        x: Math.round(r.x + r.width/2),
-                        y: Math.round(r.y + r.height/2),
-                        w: Math.round(r.width),
-                        h: Math.round(r.height),
-                        visible: r.top < window.innerHeight && r.bottom > 0,
-                    }});
-                }});
-                const info = {{ title: document.title, url: location.href, viewport: {{ w: window.innerWidth, h: window.innerHeight }}, total: items.length, visible: items.filter(i => i.visible).length }};
-                let textContent = '';
-                if ({json.dumps(full)} === true) {{
-                    textContent = (document.body ? document.body.innerText : '').substring(0, 30000);
-                }}
-                return {{ info, items, textContent }};
-            }})()
-            """,
-                )
-                snap = _parse_result(result)
-                if isinstance(snap, dict) and "error" in snap:
-                    return f"Snapshot error: {snap['error']}"
-                _cache_snapshot(_shared_tab_id, full, snap)
-            info = snap.get("info", {})
-            items = snap.get("items", [])
-            lines = [
-                f"📄 {info.get('title', '?')}",
-                f"🌐 {info.get('url', '?')}",
-                f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements",
-                "",
-            ]
-            for it in items[:60]:
-                vis = "⬆ " if not it["visible"] else ""
-                label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it["tag"]
-                lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
-            if len(items) > 60:
-                lines.append(f"  ... and {len(items) - 60} more")
-            if full:
-                text_content = snap.get("textContent", "")
-                lines.extend(["", "--- Page Text ---", str(text_content)[:20000]])
-            return "\n".join(lines)
-
-        elif name == "browser_scroll":
-            direction = args.get("direction", "down")
-            amount = args.get("amount", 0)
-            result = _hermes_call(
-                "scrollBy",
-                direction,
-                amount,
-                fallback=f"""
-            (() => {{
-                const dir = {json.dumps(direction)};
-                let amt = {amount or 0};
-                if (!amt) {{ amt = Math.round(window.innerHeight / 2); }}
-                const dx = dir === 'right' ? amt : (dir === 'left' ? -amt : 0);
-                const dy = dir === 'down' ? amt : (dir === 'up' ? -amt : 0);
-                window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
-                return {{ ok: true, direction: dir, amount: amt }};
-            }})()
-            """,
-            )
-            return f"Scrolled {direction} by {abs(amount or 400)}px"
-
-        elif name == "browser_wait_selector":
-            selector = args["selector"]
-            timeout = min(args.get("timeout", 15), 60)
-            state = args.get("state", "visible")
-            result = _hermes_call(
-                "waitSelector",
-                selector,
-                timeout,
-                state,
-                fallback=f"""
-            (() => {{
-                const deadline = Date.now() + {timeout * 1000};
-                while (Date.now() < deadline) {{
-                    const el = document.querySelector({json.dumps(selector)});
-                    if (el) {{
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0) return {{ ok: true }};
-                    }}
-                }}
-                return {{ error: 'Timeout' }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and value.get("ok"):
-                return f"Selector '{selector}' matched"
-            return f"Timed out ({timeout}s) waiting for '{selector}'"
-
-        elif name == "browser_click_text":
-            text_query = args["text"]
-            tag_filter = args.get("tag", "")
-            result = _hermes_call(
-                "clickText",
-                text_query,
-                tag_filter,
-                fallback=f"""
-            (() => {{
-                const q = {json.dumps(text_query)}.toLowerCase();
-                const tag = {json.dumps(tag_filter)};
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const all = _shadowQueryAll(document, 'a, button, span, label, div[role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], select, [onclick], [tabindex]');
-                for (const el of all) {{
-                    if (tag && el.tagName.toLowerCase() !== tag) continue;
-                    const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
-                    if (txt.includes(q)) {{
-                        const r = el.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) continue;
-                        const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
-                        el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                        el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                        el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
-                        return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
-                    }}
-                }}
-                return {{ error: 'No element found with text: ' + q }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return f"Error: {value['error']}"
-            return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) by text"
-
-        elif name == "browser_fill_by_label":
-            label = args["label"]
-            text = args["text"]
-            result = _hermes_call(
-                "fillByLabel",
-                label,
-                text,
-                fallback=f"""
-            (() => {{
-                const search = {json.dumps(label)}.toLowerCase();
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                let input = null;
-                for (const lbl of _shadowQueryAll(document, 'label')) {{
-                    if ((lbl.textContent||'').trim().toLowerCase().includes(search)) {{
-                        const forId = lbl.getAttribute('for');
-                        if (forId) input = document.getElementById(forId) || document.querySelector('input[name=' + JSON.stringify(forId) + ']');
-                        else input = lbl.querySelector('input, textarea, select');
-                        if (input) break;
-                    }}
-                }}
-                if (!input) {{
-                    for (const el of _shadowQueryAll(document, 'input, textarea')) {{
-                        const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
-                        if (ph.toLowerCase().includes(search)) {{ input = el; break; }}
-                    }}
-                }}
-                if (!input) {{
-                    for (const el of _shadowQueryAll(document, 'input, textarea')) {{
-                        if ((el.getAttribute('name') || '').toLowerCase().includes(search)) {{ input = el; break; }}
-                    }}
-                }}
-                if (!input) return {{ error: 'Could not find input for: ' + search }};
-                input.focus();
-                input.value = '';
-                input.select();
-                document.execCommand('insertText', false, {json.dumps(text)});
-                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return {{ ok: true, tag: input.tagName, type: input.type || '' }};
-            }})()
-            """,
-            )
-            fill_result = _parse_result(result)
-            if isinstance(fill_result, dict) and "error" in fill_result:
-                return f"Error: {fill_result['error']}"
-            return f"Filled '{label}' with '{text}'"
-
-        elif name == "browser_get_text":
-            result = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0, 50000) : ''")
-            return str(_parse_result(result))
-
-        elif name == "browser_recent_events":
-            limit = min(args.get("limit", 20), 200)
-            mode = args.get("mode", "nav")
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit}&mode={mode}")
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    result = json.loads(r.read().decode())
-                ev_count = result.get("count", 0)
-                events = result.get("events", [])
-                lines = [f"📊 {ev_count} recent events:", ""]
-                for e in events:
-                    etype = e.get("type", "?")
-                    if etype == "tab":
-                        lines.append(f"  🏁 NAV: {e.get('url', '')[:120]}")
-                    elif etype == "download":
-                        lines.append(f"  📥 DOWNLOAD: {e.get('filename', e.get('url', ''))[:120]}")
-                    elif etype == "webrequest" and e.get("event") in ("completed", "error"):
-                        lines.append(f"  🌐 {e['event']}: {e.get('method', '?')} {e.get('statusCode', '?')} {e.get('url', '')[:100]}")
-                    elif etype == "response_body":
-                        lines.append(f"  📄 BODY: {e.get('url', '')[:100]}")
-                if len(lines) <= 2:
-                    lines.append("  (no events yet)")
-                return "\n".join(lines)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_key":
-            key = args.get("key", "Escape")
-            _cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key})
-            _cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key})
-            return f"Pressed {key}"
-
-        elif name == "browser_back":
-            _hermes_call("historyBack", fallback="window.history.back()")
-            _invalidate_cache()
-            return "Navigated back"
-
-        elif name == "browser_console":
-            limit = min(args.get("limit", 20), 200)
-            # Ensure Runtime domain is enabled (safe to send repeatedly)
-            _cdp("Runtime.enable", timeout=5)
-            # Query capture buffer for console events
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    result = json.loads(r.read().decode())
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-            events = result.get("events", [])
-            # Filter for Runtime.consoleAPICalled events
-            console_events = [e for e in events if e.get("type") == "event" and e.get("method") == "Runtime.consoleAPICalled"]
-            console_events = console_events[:limit]
-            if not console_events:
-                return "No console messages captured yet. Try navigating to a page and running JavaScript that calls console.log()."
-            lines = [f"📋 {len(console_events)} recent console messages:", ""]
-            for e in console_events:
-                params = e.get("params", {})
-                level = params.get("type", "log")
-                args_list = params.get("args", [])
-                text_parts = []
-                for arg in args_list:
-                    arg_type = arg.get("type", "")
-                    if arg_type == "string":
-                        text_parts.append(arg.get("value", ""))
-                    elif arg_type in ("number", "boolean"):
-                        text_parts.append(str(arg.get("value", "")))
-                    elif arg_type == "undefined":
-                        text_parts.append("undefined")
-                    elif arg_type == "object":
-                        preview = arg.get("preview", {})
-                        if preview and preview.get("description"):
-                            text_parts.append(str(preview.get("description", "")))
-                        else:
-                            text_parts.append(str(arg.get("description", "[Object]")))
-                    else:
-                        text_parts.append(str(arg.get("description", arg.get("value", str(arg)))))
-                msg_text = " ".join(text_parts)
-                icon = {"log": "📝", "warning": "⚠️", "error": "❌", "debug": "🔍", "info": "ℹ️"}.get(level, "📝")
-                lines.append(f"  {icon} [{level}] {msg_text[:300]}")
-            return "\n".join(lines)
-
-        elif name == "browser_list_tabs":
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/tabs")
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                if "error" in result:
-                    return json.dumps({"error": result["error"]})
-                tabs = result.get("tabs", [])
-                if not tabs:
-                    return "No tabs found."
-                lines = [f"📑 {len(tabs)} open tabs:", ""]
-                for t in tabs:
-                    active = "🟢" if t.get("active") else "  "
-                    title = (t.get("title", "") or "").strip()[:60]
-                    url = (t.get("url", "") or "").strip()[:80]
-                    lines.append(f"  {active} [{t['id']}] {title}")
-                    lines.append(f"              {url}")
-                return "\n".join(lines)
-            except Exception as e:
-                return json.dumps({"error": f"Error listing tabs: {e}"})
-
-        elif name == "browser_attach_tab":
-            tab_id = args.get("tab_id")
-            keyword = args.get("keyword")
-            if not tab_id and not keyword:
-                return "Provide either tab_id or keyword to find the tab."
-            if keyword and not tab_id:
-                try:
-                    req = urllib.request.Request(f"{CDP_SERVER}/tabs")
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        result = json.loads(resp.read().decode())
-                    kw = keyword.lower()
-                    matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
-                    if not matches:
-                        return f"No tab found matching '{keyword}'"
-                    tab_id = matches[0]["id"]
-                except Exception as e:
-                    return json.dumps({"error": str(e)})
-            body = json.dumps({"tabId": tab_id}).encode()
-            req = urllib.request.Request(f"{CDP_SERVER}/tabs/attach", data=body, method="POST")
-            req.add_header("Content-Type", "application/json")
-            try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                if result.get("success"):
-                    return f"🔗 Attached to tab {tab_id} ({result.get('attachmentCount', '?')} total)"
-                return json.dumps(result)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_detach_tab":
-            tab_id = args.get("tab_id")
-            if not tab_id:
-                return "Provide tab_id to detach."
-            body = json.dumps({"tabId": tab_id}).encode()
-            req = urllib.request.Request(f"{CDP_SERVER}/tabs/detach", data=body, method="POST")
-            req.add_header("Content-Type", "application/json")
-            try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                if result.get("success"):
-                    return f"🔌 Detached from tab {tab_id} ({result.get('attachmentCount', '?')} remaining)"
-                return json.dumps(result)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_list_attachments":
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/tabs/attachments")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    result = json.loads(resp.read().decode())
-                attached = result.get("attachments", [])
-                if not attached:
-                    return "No tabs currently attached."
-                lines = [f"🔗 {len(attached)} attached tab(s):", ""]
-                for a in attached:
-                    lines.append(f"  [{a['tabId']}]")
-                return "\n".join(lines)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_switch_tab":
-            tab_id = args.get("tab_id")
-            keyword = args.get("keyword")
-            if not tab_id and not keyword:
-                return "Provide either tab_id or keyword to find the tab."
-
-            # If keyword given, find matching tab first
-            if keyword and not tab_id:
-                try:
-                    req = urllib.request.Request(f"{CDP_SERVER}/tabs")
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        result = json.loads(resp.read().decode())
-                    if "error" in result:
-                        return json.dumps({"error": result["error"]})
-                    kw = keyword.lower()
-                    matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
-                    if not matches:
-                        return f"No tab found matching '{keyword}'"
-                    tab_id = matches[0]["id"]
-                    if len(matches) > 1:
-                        return f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
-                            f"  [{t['id']}] {t.get('title', '')[:60]}" for t in matches
-                        )
-                except Exception as e:
-                    return json.dumps({"error": f"Error searching tabs: {e}"})
-
-            body = json.dumps({"tabId": tab_id}).encode()
-            switch_req = urllib.request.Request(f"{CDP_SERVER}/tabs/switch", data=body, method="POST")
-            switch_req.add_header("Content-Type", "application/json")
-            try:
-                with urllib.request.urlopen(switch_req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                if result.get("success"):
-                    return f"✅ Switched to tab {tab_id}"
-                return f"Switch failed: {result.get('error', 'unknown')}"
-            except Exception as e:
-                return json.dumps({"error": f"Error switching tab: {e}"})
-
-        elif name == "browser_get_cookies":
-            result = _cdp("Network.getCookies")
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            cookies = result.get("result", {}).get("cookies", [])
-            if not cookies:
-                return "No cookies for the current page."
-            lines = [f"🍪 {len(cookies)} cookies:", ""]
-            for c in cookies:
-                name = c.get("name", "?")
-                value = c.get("value", "")
-                domain = c.get("domain", "")
-                path = c.get("path", "")
-                httponly = "🔒" if c.get("httpOnly") else "  "
-                secure = "🔐" if c.get("secure") else "  "
-                session = "📄" if c.get("session") else "⏳"
-                expiry = ""
-                if not c.get("session"):
-                    import datetime
-
-                    exp = c.get("expires", 0)
-                    if exp:
-                        try:
-                            expiry = f" (expires {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d')})"
-                        except Exception:
-                            expiry = ""
-                lines.append(f"  {httponly}{secure}{session} {name}={value[:80]}{expiry}")
-                lines.append(f"         Domain: {domain}{path}")
-            return "\n".join(lines)
-
-        elif name == "browser_clear_cookies":
-            result = _cdp("Network.clearBrowserCookies")
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            return "🧹 All cookies cleared."
-
-        elif name == "browser_get_downloads":
-            limit = min(args.get("limit", 20), 50)
-            try:
-                req = urllib.request.Request(f"{CDP_SERVER}/recent?limit={limit * 2}&mode=all")
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    dl_result = json.loads(r.read().decode())
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-            events = dl_result.get("events", [])
-            dl_events = [e for e in events if e.get("type") == "download"]
-            dl_events = dl_events[:limit]
-            if not dl_events:
-                return "No recent downloads captured."
-            lines = [f"📥 {len(dl_events)} recent downloads:", ""]
-            for d in dl_events:
-                evt = d.get("event", "?")
-                icon = "🆕" if evt == "created" else "✅" if evt == "changed" else "📄"
-                filename = d.get("filename", d.get("url", "?")).split("/")[-1][:60]
-                url = (d.get("url", "") or "")[:80]
-                state = d.get("state", "")
-                total = d.get("totalBytes", 0)
-                lines.append(f"  {icon} {filename}")
-                lines.append(f"     {url}")
-                if state:
-                    lines.append(f"     State: {state}")
-                if total:
-                    lines.append(f"     Size: {total} bytes")
-            return "\n".join(lines)
-
-        elif name == "browser_refresh":
-            hard = args.get("hard_reload", False)
-            result = _cdp("Page.reload", {"ignoreCache": hard})
-            _invalidate_cache()
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            return "🔄 Page reloaded" + (" (hard)" if hard else "")
-
-        elif name == "browser_forward":
-            _hermes_call("historyForward", fallback="window.history.forward()")
-            _invalidate_cache()
-            return "Navigated forward"
-
-        elif name == "browser_get_title":
-            result = _hermes_call("docInfo", fallback="({ title: document.title, url: location.href })")
-            value = _parse_result(result)
-            if isinstance(value, dict):
-                return f"📄 {value.get('title', '?')}\n🌐 {value.get('url', '?')}"
-            return f"📄 {value}"
-
-        elif name == "browser_find":
-            query = args["query"]
-            result = _hermes_call(
-                "find",
-                query,
-                fallback=f"""
-            (() => {{
-                const q = {json.dumps(query)}.toLowerCase();
-                const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
-                const all = _sq(document, selectors.join(','));
-                const seen = new Set();
-                const results = [];
-                let idx = 0;
-                all.forEach(el => {{
-                    if (seen.has(el)) return;
-                    seen.add(el);
-                    const txt = (el.textContent||'').trim();
-                    const aria = el.getAttribute('aria-label') || '';
-                    const placeholder = el.placeholder || '';
-                    const name = el.getAttribute('name') || '';
-                    const val = el.value || '';
-                    const textSources = [txt, aria, placeholder, name, val];
-                    let matched = false;
-                    for (const s of textSources) {{ if (s.toLowerCase().includes(q)) {{ matched = true; break; }} }}
-                    if (!matched) return;
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return;
-                    idx++;
-                    results.push({{ ref: 'e'+idx, tag: el.tagName.toLowerCase(), text: txt.substring(0,120), x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
-                }});
-                return {{ count: results.length, results: results }};
-            }})()
-            """,
-            )
-            find_result = _parse_result(result)
-            if isinstance(find_result, dict) and "error" in find_result:
-                return json.dumps({"error": find_result["error"]})
-            count = find_result.get("count", 0)
-            items = find_result.get("results", [])
-            if count == 0:
-                return f"No elements found matching '{query}'"
-            lines = [f"🔍 {count} element(s) matching '{query}':", ""]
-            for it in items:
-                vis = "" if it["visible"] else "⬆"
-                lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{it["text"][:70]}" @({it["x"]},{it["y"]})')
-            return "\n".join(lines)
-
-        elif name == "browser_block_patterns":
-            patterns = args.get("patterns", [])
-            if not isinstance(patterns, list):
-                return json.dumps({"error": "patterns must be an array of strings"})
-            body = json.dumps({"patterns": patterns}).encode()
-            req = urllib.request.Request(f"{CDP_SERVER}/block/patterns", data=body, method="POST")
-            req.add_header("Content-Type", "application/json")
-            try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                if result.get("success"):
-                    if patterns:
-                        return f"🚫 Blocking {len(patterns)} patterns: {', '.join(patterns[:10])}"
-                    return "✅ All blocking patterns cleared"
-                return json.dumps(result)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_select_option":
-            selector = args["selector"]
-            text = args["text"]
-            result = _hermes_call(
-                "selectOption",
-                selector,
-                text,
-                fallback=f"""
-            (() => {{
-                const select = document.querySelector({json.dumps(selector)});
-                if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
-                if (select.tagName !== 'SELECT') return {{ error: 'Element is not a <select>' }};
-                const options = Array.from(select.options);
-                const q = {json.dumps(text)}.trim().toLowerCase();
-                const target = options.find(o => (o.text||'').trim().toLowerCase() === q);
-                if (!target) return {{ error: 'Option not found with text: ' + {json.dumps(text)} }};
-                select.value = target.value;
-                select.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                select.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return f"Error: {value['error']}"
-            return f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}, index={value.get('index', '?')}) in '{selector}'"
-
-        elif name == "browser_screenshot_annotated":
-            # Get interactive elements via __hermes.snapshot (avoids inline JS through CDP)
-            annotate_result = _hermes_call(
-                "snapshot",
-                False,
-                fallback=f"""
-            (() => {{
-                const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
-                const _shadowQueryAll = (root, sel) => {{
-                    let r = [];
-                    try {{ r = Array.from(root.querySelectorAll(sel)); }} catch(e) {{}}
-                    if (root.shadowRoot) r = r.concat(_shadowQueryAll(root.shadowRoot, sel));
-                    for (const c of root.children || []) r = r.concat(_shadowQueryAll(c, sel));
-                    return r;
-                }};
-                const all = _shadowQueryAll(document, selectors.join(','));
-                const seen = new Set();
-                const items = [];
-                let idx = 0;
-                all.forEach(el => {{
-                    if (seen.has(el)) return;
-                    seen.add(el);
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return;
-                    idx++;
-                    const txt = (el.textContent||'').trim().substring(0, 100);
-                    const placeholder = el.placeholder || '';
-                    const aria = el.getAttribute('aria-label') || '';
-                    const name = el.getAttribute('name') || '';
-                    items.push({{ ref: 'e' + idx, tag: el.tagName.toLowerCase(), text: txt, placeholder: placeholder, aria_label: aria, name: name, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), w: Math.round(r.width), h: Math.round(r.height), visible: r.top < window.innerHeight && r.bottom > 0 }});
-                }});
-                return {{ info: {{ total: items.length, visible: items.filter(i => i.visible).length }}, items: items }};
-            }})()
-            """,
-            )
-            snap = _parse_result(annotate_result)
-            all_items = snap.get("items", [])
-            annotations = [it for it in all_items if it.get("visible") and it.get("x")][:50]
-            shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
-            data = shot.get("result", {}).get("data", "")
-            lines = ["📸 Annotated screenshot — interactive elements:", ""]
-            for a in annotations if isinstance(annotations, list) else []:
-                lines.append(f'  [{a["ref"]}] "{a["text"][:50]}" @({a["x"]},{a["y"]})')
-            if data:
-                import os
-
-                img_dir = os.path.expanduser("~/.hermes/image_cache")
-                os.makedirs(img_dir, exist_ok=True)
-                img_path = os.path.join(img_dir, f"annotated_{int(__import__('time').time())}.png")
-                with open(img_path, "wb") as f:
-                    f.write(base64.b64decode(data))
-                return "MEDIA:" + img_path + "\n" + "\n".join(lines)
-            return "\n".join(lines)
-
-        elif name == "browser_pdf":
-            landscape = args.get("landscape", False)
-            scale = args.get("scale", 1.0)
-            params = {
-                "landscape": landscape,
-                "scale": scale,
-                "printBackground": True,
-                "preferCSSPageSize": True,
-                "paperWidth": 8.27,
-                "paperHeight": 11.69,
-            }
-            result = _cdp("Page.printToPDF", params)
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            data = result.get("result", {}).get("data", "")
-            if data:
-                pdf_bytes = base64.b64decode(data)
-                return json.dumps(
-                    {
-                        "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
-                        "size": len(pdf_bytes),
-                        "mime": "application/pdf",
-                    },
-                    indent=2,
-                )
-            return "No PDF data returned"
-
-        elif name == "browser_wait_for_navigation":
-            import time as _time_module
-
-            tab_id = args.get("tab_id")
-            timeout = min(args.get("timeout", 30), 120)
-            deadline = _time_module.time() + timeout
-            start_ts = _time_module.time() * 1000
-            while _time_module.time() < deadline:
-                try:
-                    req = urllib.request.Request(f"{CDP_SERVER}/recent?mode=nav&since={start_ts}&limit=5")
-                    with urllib.request.urlopen(req, timeout=5) as r:
-                        result = json.loads(r.read().decode())
-                    events = result.get("events", [])
-                    for e in events:
-                        if e.get("type") == "tab" and e.get("event") == "navigated":
-                            if tab_id is None or e.get("tabId") == tab_id:
-                                return json.dumps(
-                                    {
-                                        "navigated": True,
-                                        "url": e.get("url", ""),
-                                        "title": e.get("title", ""),
-                                        "tabId": e.get("tabId"),
-                                        "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
-                                    },
-                                    indent=2,
-                                )
-                except Exception:
-                    pass
-                _time_module.sleep(0.5)
-            return json.dumps(
-                {
-                    "navigated": False,
-                    "error": f"Navigation timeout after {timeout}s",
-                    "elapsed": timeout,
-                },
-                indent=2,
-            )
-
-        elif name == "browser_network_requests":
-            ev_filter = args.get("event", "")
-            since = args.get("since", 0)
-            limit = min(args.get("limit", 20), 100)
-            try:
-                qs = f"{CDP_SERVER}/recent?mode=all&type=webrequest&limit={limit}"
-                if since:
-                    qs += f"&since={since}"
-                req = urllib.request.Request(qs)
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    result = json.loads(r.read().decode())
-                events = result.get("events", [])
-                if ev_filter:
-                    events = [e for e in events if e.get("event") == ev_filter]
-                lines = [f"🌐 {len(events)} network requests:", ""]
-                for e in events[:limit]:
-                    ev = e.get("event", "?")
-                    method = e.get("method", "?")
-                    status = e.get("statusCode", "?")
-                    url = e.get("url", "")[:100]
-                    lines.append(f"  {ev.upper()} {method} {status} {url}")
-                if len(lines) <= 2:
-                    lines.append("  (no matching network requests found)")
-                return "\n".join(lines)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_response_body":
-            since = args.get("since", 0)
-            limit = min(args.get("limit", 5), 20)
-            try:
-                qs = f"{CDP_SERVER}/recent?mode=all&type=response_body&limit={limit}"
-                if since:
-                    qs += f"&since={since}"
-                req = urllib.request.Request(qs)
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    result = json.loads(r.read().decode())
-                events = result.get("events", [])
-                include_body = args.get("include_body", False)
-                lines = [f"📄 {len(events)} captured response bodies:", ""]
-                for e in events[:limit]:
-                    url = e.get("url", "")[:100]
-                    mime = e.get("mimeType", "?")
-                    body = e.get("body", "")
-                    b64 = e.get("base64Encoded", False)
-                    size = len(body)
-                    lines.append(f"  {url}")
-                    lines.append(f"     MIME: {mime}  Size: {size}  Base64: {b64}")
-                    if include_body and body:
-                        snippet = body[:500]
-                        if b64:
-                            try:
-                                snippet = base64.b64decode(body[:500]).decode("utf-8", errors="replace")[:500]
-                            except Exception:
-                                pass
-                        lines.append(f"     Body: {snippet}")
-                if len(lines) <= 2:
-                    lines.append("  (no response bodies captured yet)")
-                return "\n".join(lines)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_set_cookie":
-            params = {
-                "name": args["name"],
-                "value": args["value"],
-            }
-            if "url" in args:
-                params["url"] = args["url"]
-            if "domain" in args:
-                params["domain"] = args["domain"]
-            if "path" in args:
-                params["path"] = args["path"]
-            if args.get("secure"):
-                params["secure"] = True
-            if args.get("httpOnly"):
-                params["httpOnly"] = True
-            if "sameSite" in args:
-                params["sameSite"] = args["sameSite"]
-            result = _cdp("Network.setCookie", params)
-            if "error" in result:
-                return json.dumps({"error": result["error"]})
-            r = result.get("result", {})
-            success = r.get("success", False)
-            return json.dumps(
-                {
-                    "success": success,
-                    "cookie": params.get("name"),
-                    "domain": params.get("domain", params.get("url", "any")),
-                },
-                indent=2,
-            )
-
-        elif name == "browser_upload_file":
-            selector = args["selector"]
-            file_paths = args["file_paths"]
-            if not isinstance(file_paths, list):
-                file_paths = [file_paths]
-            # Validate the file input exists via JS
-            find_js = f"""
-            (() => {{
-                const el = document.querySelector({json.dumps(selector)});
-                if (!el) return {{ error: 'File input not found: ' + {json.dumps(selector)} }};
-                if (el.tagName !== 'INPUT' || (el.type !== 'file' && el.getAttribute('type') !== 'file'))
-                    return {{ error: 'Not a file input: ' + el.tagName + ' type=' + (el.type || 'none') }};
-                return {{ found: true }};
-            }})()
-            """
-            check = _parse_result(_cdp("Runtime.evaluate", {"expression": find_js, "returnByValue": True}))
-            if isinstance(check, dict) and "error" in check:
-                return f"Error: {check['error']}"
-            # Get the backend node ID
-            doc_result = _cdp("DOM.getDocument", {"depth": 0})
-            if "error" in doc_result:
-                return f"Error getting DOM: {doc_result['error']}"
-            node_id_result = _cdp("DOM.querySelector", {"nodeId": doc_result["result"]["root"]["nodeId"], "selector": selector})
-            if "error" in node_id_result:
-                return f"Error finding node: {node_id_result['error']}"
-            node_id = node_id_result.get("result", {}).get("nodeId")
-            if not node_id:
-                return f"Error: Could not find node for selector: {selector}"
-            files_result = _cdp("DOM.setFileInputFiles", {"nodeId": node_id, "files": file_paths})
-            if "error" in files_result:
-                return f"Error setting files: {files_result['error']}"
-            return json.dumps({"success": True, "files": file_paths}, indent=2)
-
-        elif name == "browser_dismiss_dialog":
-            accept = args.get("accept", True)
-            params = {"accept": accept}
-            if "prompt_text" in args:
-                params["promptText"] = args["prompt_text"]
-            result = _cdp("Page.handleJavaScriptDialog", params)
-            if "error" in result:
-                return f"Error dismissing dialog: {result['error']}"
-            return json.dumps({"accepted": accept, "success": True}, indent=2)
-
-        elif name == "browser_form_fill":
-            fields = args["fields"]
-            result = _hermes_call(
-                "formFill",
-                fields,
-                fallback=f"""
-            (() => {{
-                var fields = {json.dumps(fields)};
-                var errors = [];
-                var completed = 0;
-                var keys = Object.keys(fields);
-                var _shadowQueryAll = function(r, sel) {{ var z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_shadowQueryAll(r.shadowRoot,sel)); for(var c=0;c<(r.children||[]).length;c++) z=z.concat(_shadowQueryAll(r.children[c],sel)); return z; }};
-                for (var i = 0; i < keys.length; i++) {{
-                    var identifier = keys[i];
-                    var value = fields[identifier];
-                    var valueStr = String(value);
-                    var isSelector = identifier.charCodeAt(0) === 35 || identifier.charCodeAt(0) === 46 || identifier.charCodeAt(0) === 91 || identifier.charCodeAt(0) === 58 || identifier.indexOf(' ') > 0 || identifier.indexOf('input[') === 0;
-                    var el = null;
-                    if (isSelector) {{
-                        el = document.querySelector(identifier);
-                    }} else {{
-                        var s = identifier.toLowerCase();
-                        var labels = _shadowQueryAll(document, 'label');
-                        for (var li = 0; li < labels.length; li++) {{
-                            var lbl = labels[li];
-                            if ((lbl.textContent||'').trim().toLowerCase().indexOf(s) !== -1) {{
-                                var fid = lbl.getAttribute('for');
-                                if (fid) el = document.getElementById(fid);
-                                else el = lbl.querySelector('input,textarea,select');
-                                if (el) break;
-                            }}
-                        }}
-                        if (!el) {{
-                            var allInp = _shadowQueryAll(document, 'input,textarea');
-                            for (var pi = 0; pi < allInp.length; pi++) {{
-                                var ph = allInp[pi].getAttribute('placeholder') || allInp[pi].getAttribute('aria-label') || '';
-                                if (ph.toLowerCase().indexOf(s) !== -1) {{ el = allInp[pi]; break; }}
-                            }}
-                        }}
-                        if (!el) {{
-                            var allInp2 = _shadowQueryAll(document, 'input,textarea');
-                            for (var ni = 0; ni < allInp2.length; ni++) {{
-                                if ((allInp2[ni].getAttribute('name')||'').toLowerCase().indexOf(s) !== -1) {{ el = allInp2[ni]; break; }}
-                            }}
-                        }}
-                    }}
-                    if (!el) {{
-                        errors.push({{field: identifier, error: 'Field not found'}});
-                        continue;
-                    }}
-                    if (el.tagName === 'SELECT') {{
-                        var opts = Array.from(el.options);
-                        var found = false;
-                        for (var j = 0; j < opts.length; j++) {{
-                            if (opts[j].value === valueStr || opts[j].text.indexOf(valueStr) !== -1) {{
-                                el.value = opts[j].value;
-                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                                completed++;
-                                found = true;
-                                break;
-                            }}
-                        }}
-                        if (!found) errors.push({{field: identifier, error: 'Option not found'}});
-                        continue;
-                    }}
-                    el.focus(); el.value = ''; el.select();
-                    document.execCommand('insertText', false, valueStr);
-                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    completed++;
-                }}
-                return {{completed: completed, errors: errors}};
-            }})()
-            """,
-            )
-            value = _parse_result(result)
-            if isinstance(value, dict) and "error" in value:
-                return json.dumps(value, indent=2)
-            if isinstance(value, dict):
-                return json.dumps(value, indent=2)
-            return str(value)
-
-        elif name == "browser_create_tab":
-            url = args.get("url", "about:blank")
-            active = args.get("active", True)
-            try:
-                req = urllib.request.Request(
-                    f"{CDP_SERVER}/tabs/create",
-                    data=json.dumps({"url": url, "active": active}).encode(),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                return json.dumps(result, indent=2)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_close_tab":
-            tab_id = args["tab_id"]
-            try:
-                req = urllib.request.Request(
-                    f"{CDP_SERVER}/tabs/close",
-                    data=json.dumps({"tabId": tab_id}).encode(),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                return json.dumps(result, indent=2)
-            except Exception as e:
-                return json.dumps({"error": str(e)})
-
-        elif name == "browser_do":
-            actions = args.get("actions", [])
-            if not actions or not isinstance(actions, list):
-                return json.dumps({"error": "actions must be a non-empty array"})
-            results = []
-            for act in actions:
-                action = act.get("action", "")
-                try:
-                    if action == "navigate":
-                        _cdp("Page.navigate", {"url": act["url"]})
-                        results.append(f"Navigated to {act.get('url', '?')}")
-                    elif action == "navigate_wait":
-                        url = act["url"]
-                        to = min(act.get("timeout", 15), 60)
-                        _cdp("Page.navigate", {"url": url})
-                        import time as _nwt
-
-                        deadline = _nwt.time() + to
-                        title = "?"
-                        while _nwt.time() < deadline:
-                            ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
-                            if isinstance(ready, dict):
-                                title = ready.get("title", "?")
-                                if ready.get("readyState") == "complete":
-                                    break
-                            _nwt.sleep(0.3)
-                        wait_for = act.get("wait_for")
-                        if wait_for:
-                            ws_v = _parse_result(_hermes_call("waitSelector", wait_for, to, "visible"))
-                            if isinstance(ws_v, dict) and ws_v.get("ok"):
-                                results.append(f"Navigate-wait: '{title}' loaded, '{wait_for}' visible")
-                            else:
-                                results.append(f"Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
-                        else:
-                            results.append(f"Navigate-wait: '{title}' loaded")
-                    elif action == "wait_selector":
-                        sel = act["selector"]
-                        to = min(act.get("timeout", 10), 60)
-                        ws_r = _hermes_call(
-                            "waitSelector",
-                            sel,
-                            to,
-                            "visible",
-                            fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to * 1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()",
-                        )
-                        r = _parse_result(ws_r)
-                        results.append(f"Wait: '{sel}' {'visible' if isinstance(r, dict) and r.get('ok') else 'timeout'}")
-                    elif action == "click":
-                        sel = act["selector"]
-                        cr = _hermes_call("click", sel)
-                        v = _parse_result(cr)
-                        results.append(f"Clicked '{sel}'" if isinstance(v, dict) and v.get("ok") else f"Click failed: {v}")
-                    elif action == "type":
-                        sel = act["selector"]
-                        txt = act["text"]
-                        _hermes_call("type", sel, txt)
-                        results.append(f"Typed into '{sel}'")
-                    elif action == "enter":
-                        _hermes_call("key", "Enter")
-                        results.append("Pressed Enter")
-                    elif action == "hover":
-                        sel = act["selector"]
-                        hv_r = _hermes_call("hover", sel)
-                        hv_v = _parse_result(hv_r)
-                        results.append(f"Hovered '{sel}'" if isinstance(hv_v, dict) and hv_v.get("ok") else f"Hover failed: {hv_v}")
-                    elif action == "click_text":
-                        text_query = act["text"]
-                        tag_filter = act.get("tag", "")
-                        ct_r = _hermes_call("clickText", text_query, tag_filter)
-                        ct_v = _parse_result(ct_r)
-                        results.append(f"Clicked text '{text_query}'" if isinstance(ct_v, dict) and "error" not in ct_v else f"Click-text failed: {ct_v}")
-                    elif action == "key":
-                        k = act.get("key", "Escape")
-                        _hermes_call("key", k)
-                        results.append(f"Pressed {k}")
-                    elif action == "screenshot":
-                        shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
-                        results.append("Screenshot captured" if "error" not in shot else "Screenshot failed")
-                    elif action == "fill_by_label":
-                        lbl = act["label"]
-                        txt = act["text"]
-                        fl_r = _hermes_call("fillByLabel", lbl, txt)
-                        fl_v = _parse_result(fl_r)
-                        results.append(f"Filled '{lbl}'" if isinstance(fl_v, dict) and "error" not in fl_v else f"Fill failed: {fl_v}")
-                    elif action == "scroll":
-                        d = act.get("direction", "down")
-                        a = act.get("amount", 0)
-                        _hermes_call("scrollBy", d, a)
-                        results.append(f"Scrolled {d}")
-                    elif action == "back":
-                        _hermes_call("historyBack", fallback="window.history.back()")
-                        _invalidate_cache()
-                        results.append("Navigated back")
-                    elif action == "forward":
-                        _hermes_call("historyForward", fallback="window.history.forward()")
-                        _invalidate_cache()
-                        results.append("Navigated forward")
-                    elif action == "eval":
-                        expr = act["expression"]
-                        r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
-                        results.append(f"eval: {str(r)[:200]}")
-                    elif action == "snapshot":
-                        full = act.get("full", False)
-                        sn_r = _hermes_call("snapshot", full)
-                        sn_v = _parse_result(sn_r)
-                        if isinstance(sn_v, dict):
-                            info = sn_v.get("info", {})
-                            results.append(f"Snapshot: {info.get('visible', 0)}/{info.get('total', 0)} elements")
-                        else:
-                            results.append("Snapshot error")
-                    elif action == "get_text":
-                        gt_r = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0,10000) : ''")
-                        txt = str(_parse_result(gt_r))[:300]
-                        results.append(f"Text: {txt}")
-                    elif action == "wait":
-                        import time
-
-                        time.sleep(min(act.get("seconds", 1), 10))
-                        results.append(f"Waited {act.get('seconds', 1)}s")
-                    else:
-                        results.append(f"Unknown action: {action}")
-                except Exception as e:
-                    results.append(f"Error in '{action}': {e}")
-            return json.dumps({"completed": len(actions), "steps": results})
-
-        elif name == "browser_navigate_wait":
-            url = args["url"]
-            timeout = min(args.get("timeout", 15), 60)
-            nav_result = _cdp("Page.navigate", {"url": url})
-            _invalidate_cache()
-            if "error" in nav_result:
-                return json.dumps({"error": nav_result["error"]})
-            import time as _t
-
-            deadline = _t.time() + timeout
-            while _t.time() < deadline:
-                ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
-                if isinstance(ready, dict) and ready.get("readyState") == "complete":
-                    title = ready.get("title", "?")
-                    do_snap = args.get("snapshot", True)
-                    if do_snap:
-                        snap_data = _parse_result(_hermes_call("snapshot", False))
-                    else:
-                        snap_data = None
-                    lines = [f"✅ Loaded: {title}", f"🌐 {url}"]
-                    if isinstance(snap_data, dict) and "error" not in snap_data:
-                        info = snap_data.get("info", {})
-                        items = snap_data.get("items", [])
-                        lines.append(
-                            f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements"
-                        )
-                        lines.append("")
-                        for it in items[:60]:
-                            vis = "" if it["visible"] else "⬆"
-                            label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it.get("name", "") or it.get("href", "") or it["tag"]
-                            lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
-                        if len(items) > 50:
-                            lines.append(f"  ... and {len(items) - 50} more")
-                    return "\n".join(lines)
-                _t.sleep(0.3)
-            return f"Timed out loading: {url}"
-
+        handler = HANDLER_MAP.get(name)
+        if handler:
+            return handler(args)
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     def shutdown(self) -> None:

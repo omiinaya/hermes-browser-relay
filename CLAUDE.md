@@ -18,16 +18,17 @@ python3 server.py
 |--------|---------|
 | Start relay | `python3 server.py` |
 | Check status | `python3 cdp.py status` |
-| Run tests | `python3 -m pytest tests/ mcp-server/tests/ -v --tb=short` |
-| Test extension | `node --test tests/extensions/hermes-helper.test.js` |
+| Run tests | `make test` |
+| Lint | `make lint` |
+| Install deps | `make install` |
 
 ## Structure
 
 - `server.py` — CDP relay (HTTP + WS)
 - `mcp-server/server.py` — MCP tool server (stdio)
 - `extension/` — Chrome extension (background.js, content-script.js, hermes-helper.js)
-- `plugins/browser-relay/` — Hermes plugin
-- `shared.py` — Shared utilities between MCP and plugin
+- `plugins/browser-relay/` — Hermes plugin (self-contained, inherits shared utilities)
+- `browser_relay/shared.py` — Shared utilities between MCP server and plugin
 - `cdp.py` — CLI client
 
 ## Architecture

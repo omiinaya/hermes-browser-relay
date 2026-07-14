@@ -413,6 +413,63 @@ async def handle_events_sse(request):
     return response
 
 
+async def handle_wait_navigation(request):
+    """Long-poll endpoint: block until a tab.navigated event occurs.
+
+    Query params:
+      since (float): epoch ms filter — only events after this timestamp
+      tab_id (int): optional — filter for a specific tab
+      timeout (int): max seconds to wait (default 30, max 60)
+    """
+    since = float(request.query.get("since", 0))
+    tab_id = request.query.get("tab_id")
+    if tab_id:
+        tab_id = int(tab_id)
+    timeout = min(int(request.query.get("timeout", 30)), 60)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+    def subscriber(data):
+        typ = data.get("type", "")
+        evt = data.get("event", "")
+        if typ == "tab" and evt == "navigated":
+            if tab_id is None or data.get("tabId") == tab_id:
+                # Check recency
+                received = data.get("_received", 0)
+                if received >= since:
+                    try:
+                        queue.put_nowait(("ok", data))
+                    except asyncio.QueueFull:
+                        pass
+
+    event_subscribers.append(subscriber)
+    try:
+        result = None
+        try:
+            result = await asyncio.wait_for(queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+        if result:
+            _, data = result
+            return web.json_response({
+                "navigated": True,
+                "url": data.get("url", ""),
+                "title": data.get("title", ""),
+                "tabId": data.get("tabId"),
+            })
+
+        return web.json_response({
+            "navigated": False,
+            "error": f"Navigation timeout after {timeout}s",
+        })
+    finally:
+        try:
+            event_subscribers.remove(subscriber)
+        except ValueError:
+            pass
+
+
 async def handle_recent(request):
     """Return recent events from in-memory capture buffer."""
     limit = int(request.query.get("limit", 20))
@@ -805,6 +862,7 @@ async def main():
     app.router.add_get("/ws", handle_extension)
     app.router.add_get("/mcp-ws", handle_mcp_connection)
     app.router.add_get("/events", handle_events_sse)
+    app.router.add_get("/wait-nav", handle_wait_navigation)
     app.router.add_get("/recent", handle_recent)
     app.router.add_get("/stats", handle_status)
     app.router.add_get("/tabs", handle_tabs_list)
