@@ -1,65 +1,61 @@
 # Setup
 
-## Prerequisites
-
-- Python 3.10+
-- Node.js 18+ (for extension tests)
-- Chrome/Chromium browser
-
-## Quick Start
+## Hermes Plugin Install
 
 ```bash
-# 1. Clone the repo
+# 1. Clone and install deps
 git clone https://github.com/omiinaya/browser-relay.git
 cd browser-relay
+make install          # Installs Python (aiohttp, websockets, Pillow) + npm deps
 
-# 2. Install Python dependencies
-pip install aiohttp websockets Pillow 'mcp>=1.0.0' pytest pytest-asyncio
+# 2. Start the CDP relay server
+python3 server.py &
 
-# 3. Install Node.js dependencies (for extension tests)
-npm install
-
-# 4. Start the CDP relay server
-python3 server.py
-
-# 5. Load the Chrome extension
+# 3. Load the Chrome extension
 # Open chrome://extensions/ → Enable Developer mode → Load unpacked → select extension/
 
-# 6. Verify it works
-python3 cdp.py status
-# Should show the extension connected and a tab attached
-
-# 7. (Optional) Start the MCP server for agent use
-python3 -m mcp-server.server
+# 4. Install as Hermes plugin
+hermes plugins install .
+# Restart Hermes — tools (browser_navigate, browser_eval, etc.) appear automatically
 ```
+
+The plugin auto-starts the relay server on first tool use if it's not already running.
+
+## Prerequisites
+
+- **Python 3.10+** — relay server, MCP server, Hermes plugin
+- **Node.js 18+** — extension tests only
+- **Chrome/Chromium** — the extension drives Chrome via `chrome.debugger` API
+- **Hermes Agent** — the plugin registers tools for Hermes
 
 ## Cross-LAN Setup
 
-For remote browser control across machines:
+For controlling a browser on a different machine:
+
 1. Start the relay on the target machine: `python3 server.py`
 2. In the extension popup, set the server URL to `ws://<server-lan-ip>:9223/ws`
-3. Use `cdp.py --server http://<server-lan-ip>:9223` from the agent machine
+3. Point the Hermes plugin's `CDP_SERVER` to `http://<server-lan-ip>:9223`
 
-## Running Tests
+## Manual Start (without Hermes)
+
+If you want to use the CLI tools or HTTP API directly:
 
 ```bash
-# Relay server tests (39)
-python3 -m pytest tests/ -v
-
-# MCP server tests (24)
-python3 -m pytest mcp-server/tests/ -v
-
-# Extension tests (28)
-node --test tests/extensions/hermes-helper.test.js
-
-# All Python tests
-python3 -m pytest tests/ mcp-server/tests/ -v --tb=short
+python3 server.py              # Start relay
+python3 cdp.py status          # Check it's running
+python3 cdp.py navigate https://example.com
+python3 -m mcp-server.server   # Optional: MCP stdio server
 ```
 
-## Plugin Setup (Hermes Agent)
+## Development
 
 ```bash
-hermes plugins enable browser-relay
-# Restart Hermes — tools appear as browser_navigate, browser_eval, etc.
-# The plugin communicates with the relay server at localhost:9223
+make install        # All deps
+make test-python    # Relay tests (39)
+make test-mcp       # MCP tests (24)
+make test-ext       # Extension tests (48)
+make test           # All of the above
+make test-integration  # E2E tests (4, requires Chromium)
+make lint           # ruff check
+npm run lint        # ESLint
 ```

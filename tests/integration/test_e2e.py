@@ -209,7 +209,6 @@ class TestCDPE2E:
     async def test_navigate(self, chrome_cdp):
         """Navigate to a page and verify navigation completes."""
         ws_url = chrome_cdp["ws_url"]
-        base_url = chrome_cdp["base_url"]
 
         # Enable Page domain first
         result = await _cdp_call(ws_url, "Page.enable")

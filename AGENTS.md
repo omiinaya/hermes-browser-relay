@@ -1,41 +1,53 @@
 ---
 name: browser-relay
-description: "Chrome DevTools Protocol relay — control browser remotely via chrome.debugger API + WebSocket bridge"
+description: "Hermes plugin for remote Chrome/Chromium browser control via CDP"
 stack: [python, javascript]
-deps: [python3, node]
+deps: [python3, node, chromium]
 ---
 
-# browser-relay
+# browser-relay — Hermes Plugin
 
-Chrome DevTools Protocol relay — control browser remotely via chrome.debugger API + WebSocket bridge.
+Controls Chrome/Chromium through CDP (Chrome DevTools Protocol). 
+46 browser automation tools available as Hermes agent tools.
 
-## Stack
-- **Python 3.10+** — Relay server (`server.py`), MCP server (`mcp-server/server.py`), Hermes plugin (`plugins/`)
-- **JavaScript** — Chrome extension (`extension/background.js`, `extension/content-script.js`, `extension/hermes-helper.js`)
-
-## Quick Reference
+## First-Time Setup
 
 ```bash
-# Relay server
-python3 server.py
-
-# MCP server
-python3 -m mcp-server.server
-
-# Python tests
-python3 -m pytest tests/ mcp-server/tests/ -v
-
-# Extension tests
-node --test tests/extensions/hermes-helper.test.js
-
-# Install Node dependencies
+# Install deps
+pip install aiohttp websockets Pillow 'mcp>=1.0.0'
 npm install
+
+# Start relay
+python3 server.py &
+
+# Load Chrome extension
+# chrome://extensions/ → Load unpacked → extension/
+
+# Install Hermes plugin
+hermes plugins install /path/to/browser-relay
 ```
 
-## Documentation
-| Document | Purpose |
-|---|---|
-| [README.md](./README.md) | Full human-readable docs |
-| [CHANGELOG.md](./CHANGELOG.md) | Version history |
-| [SETUP.md](./SETUP.md) | Step-by-step setup |
-| [Makefile](./Makefile) | Build/test/lint targets |
+## Key Commands
+
+| Action | Command |
+|--------|---------|
+| Start relay | `python3 server.py` |
+| Check status | `python3 cdp.py status` |
+| Run tests | `make test` |
+| Lint | `make lint` |
+| Install deps | `make install` |
+
+## Structure
+
+- `plugins/browser-relay/` — **Hermes plugin** (self-contained, no external imports)
+- `server.py` — CDP relay (HTTP + WS)
+- `extension/` — Chrome extension (background, content-script, hermes-helper)
+- `mcp-server/server.py` — MCP stdio server (alternative to plugin)
+- `cdp.py` — CLI client for manual debugging
+- `browser_relay/` — shared utilities (for MCP server + dev)
+- `tests/` — relay server, extension, and E2E tests
+
+## Architecture
+
+Hermes Agent → Plugin (POST /cdp) → Relay Server → WS → Extension → chrome.debugger → Browser Tabs
+```
