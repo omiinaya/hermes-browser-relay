@@ -1,4 +1,8 @@
 name: browser-relay
-version: 2.3.1
-description: "Browser control tools — 46 tools across MCP server + Hermes plugin, navigate, eval, click, snapshot, wait, fill, scroll, formFill, CDP relay, multi-tab, content-script fast path"
-pip_dependencies: []
+version: 2.4.0
+description: "Remote browser control for Hermes Agent — 46 CDP tools: navigate, eval, click, type, snapshot, screenshot, scroll, fill, multi-tab, and more. Requires Chromium/Chrome with the companion extension."
+pip_dependencies:
+  - aiohttp
+  - websockets
+  - Pillow
+  - mcp>=1.0.0

@@ -1,42 +1,97 @@
 """
-Browser Relay Plugin — Hermes-native browser control tools.
+Browser Relay Plugin — Remote browser control for Hermes Agent.
 
-Registers tools (browser_navigate, browser_eval, etc.) that communicate
-with the CDP relay server (:9223) to control the user's browser.
+Controls the user's Chrome/Chromium browser via CDP (Chrome DevTools Protocol)
+through a relay server + companion extension.
+
+┌──────────────┐   POST /cdp   ┌──────────────┐  WebSocket  ┌──────────────┐   CDP   ┌──────────┐
+│  Hermes      │ ─────────────> │  Relay       │ ───────────> │  Extension   │ ───────> │  Browser │
+│  Agent       │ <───────────── │  Server      │ <─────────── │  (Service    │ <─────── │  Tabs    │
+│  (plugin)    │   HTTP resp    │  :9223       │   WS resp   │   Worker)    │   CDP    │          │
+└──────────────┘                └──────────────┘              └──────────────┘          └──────────┘
+
+Features:
+  - 46 browser automation tools (navigate, eval, click, type, screenshot, etc.)
+  - Content script fast path — direct DOM access, no CDP overhead
+  - Multi-tab support — attach, switch, close tabs
+  - Snapshot cache — 2s TTL eliminates redundant DOM walks
+  - Auto-starts the relay server on first tool use
+  - WS circuit breaker — auto-recovery on connection drops
 
 Usage:
-    hermes plugins enable browser-relay
-    # Then restart — tools appear as: browser_navigate, browser_eval, etc.
+    1. Start the relay server or let the plugin auto-start it
+    2. Load the Chrome extension (chrome://extensions/ → Load unpacked → extension/)
+    3. Use the tools: browser_navigate, browser_eval, browser_click, ...
+
+Quick install:
+    hermes plugins install https://github.com/omiinaya/browser-relay
+    # Start the relay: python3 server.py
+    # Then tools appear as: browser_navigate, browser_eval, etc.
 """
 
 import json
 import time
 import base64
+import subprocess
 import urllib.request
 import urllib.error
-import sys as _sys
-import os as _os
+from typing import Any
 
-# Ensure project root is on sys.path for shared.py import
-_plugin_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-if _plugin_root not in _sys.path:
-    _sys.path.insert(0, _plugin_root)
+# ---------------------------------------------------------------------------
+# Self-contained shared utilities (was browser_relay/shared.py)
+# ---------------------------------------------------------------------------
 
-# Import shared utilities
-from browser_relay.shared import (  # noqa: E402
-    js_quote,
-    parse_result,
-    cache_snapshot,
-    get_cached_snapshot,
-    invalidate_cache,
-)
 
-# Keep backward-compatible aliases for existing code
-_js_quote = js_quote
-_parse_result = parse_result
-_cache_snapshot = cache_snapshot
-_get_cached_snapshot = get_cached_snapshot
-_invalidate_cache = invalidate_cache
+def _js_quote(s: str) -> str:
+    """JSON-encode a string for safe JS interpolation."""
+    return json.dumps(s)
+
+
+def _parse_result(result: dict) -> Any:
+    """Extract the actual return value from a CDP response."""
+    if "error" in result:
+        return result
+    if "result" in result and "result" in result["result"]:
+        val = result["result"]["result"].get("value")
+        if val is not None:
+            return val
+        exc = result["result"].get("exceptionDetails")
+        if exc:
+            return {"error": f"JS exception: {exc.get('text', str(exc))}"}
+        return result["result"]["result"]
+    return result.get("result", result)
+
+
+# Snapshot cache — removes redundant DOM walks within 2s TTL
+_snapshot_cache = {}
+_last_nav_time = 0.0
+_SNAPSHOT_TTL = 2.0
+
+
+def _cache_snapshot(tab_id: int | None, full: bool, data: dict) -> None:
+    """Cache a snapshot result with current timestamp."""
+    if not data or (isinstance(data, dict) and "error" in data):
+        return
+    global _last_nav_time
+    now = time.time()
+    if now - _last_nav_time < 0.5:
+        return
+    _snapshot_cache[(tab_id or 0, full)] = {"data": data, "ts": now}
+
+
+def _get_cached_snapshot(tab_id: int | None, full: bool) -> dict | None:
+    """Return cached snapshot if fresh (< 2s), else None."""
+    entry = _snapshot_cache.get((tab_id or 0, full))
+    if entry and time.time() - entry["ts"] < _SNAPSHOT_TTL:
+        return entry["data"]
+    return None
+
+
+def _invalidate_cache() -> None:
+    """Clear all snapshot caches — call after navigation."""
+    global _last_nav_time
+    _snapshot_cache.clear()
+    _last_nav_time = time.time()
 
 try:
     from agent.memory_provider import MemoryProvider
@@ -85,6 +140,74 @@ def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
 # CDP Relay Client
 # ---------------------------------------------------------------------------
 
+_relay_process = None
+
+
+def _ensure_relay() -> str | None:
+    """Start the CDP relay server if it's not already running.
+    
+    Returns the server URL, or an error message string if startup fails.
+    Returns None on success (relay is running).
+    """
+    global _relay_process
+
+    # First check if relay is already running
+    try:
+        req = urllib.request.Request(f"{CDP_SERVER}/status", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                return None  # Already running
+    except Exception:
+        pass
+
+    # Start the relay server
+    # Find server.py relative to this plugin file
+    import os as _os
+    _plugin_dir = _os.path.dirname(_os.path.abspath(__file__))
+    _candidates = [
+        _os.path.join(_plugin_dir, "..", "..", "server.py"),   # In repo
+        _os.path.join(_plugin_dir, "..", "server.py"),         # Adjacent
+        _os.path.expanduser("~/.hermes/skills/browser-relay/server.py"),  # Skill install
+    ]
+    server_script = None
+    for c in _candidates:
+        p = _os.path.normpath(c)
+        if _os.path.exists(p):
+            server_script = p
+            break
+
+    if not server_script:
+        return (
+            "Cannot find server.py to start the CDP relay. "
+            "Install browser-relay from https://github.com/omiinaya/browser-relay "
+            "or start the relay manually: python3 server.py"
+        )
+
+    try:
+        _relay_process = subprocess.Popen(
+            [server_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=_os.path.dirname(server_script),
+        )
+    except Exception as e:
+        return f"Failed to start relay: {e}"
+
+    # Wait for it to be ready
+    for _ in range(20):
+        import time as _time
+        _time.sleep(0.3)
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}/status", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if resp.status == 200:
+                    return None  # Started successfully
+        except Exception:
+            pass
+
+    return "Relay started but not responding on time — check server.py"
+
+
 
 # Shared HTTP connection for keep-alive
 _cdp_opener = urllib.request.build_opener()
@@ -93,7 +216,8 @@ _cdp_opener.addheaders = [("Content-Type", "application/json")]
 
 def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, **extra) -> dict:
     """Send a CDP command to the relay server. Uses shared connection for keep-alive.
-    Routes to _shared_tab_id if set via _set_tab()."""
+    Routes to _shared_tab_id if set via _set_tab().
+    Auto-starts the relay server on first call if not already running."""
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
     for k, v in extra.items():
         body_dict[k] = v
@@ -108,7 +232,18 @@ def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, *
         detail = e.read().decode() if e.fp else "{}"
         return {"error": f"HTTP {e.code}", "detail": json.loads(detail) if detail else {}}
     except urllib.error.URLError as e:
-        return {"error": f"Connection failed: {e.reason}", "hint": "Is the CDP relay running on :9223?"}
+        # Connection failed — try auto-starting the relay
+        err = _ensure_relay()
+        if err:
+            return {"error": f"Connection failed: {e.reason}", "hint": err}
+        # Retry
+        try:
+            with _cdp_opener.open(req, timeout=timeout + 5) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.URLError as e2:
+            return {"error": f"Connection failed after auto-start: {e2.reason}", "hint": "Is the Chrome extension loaded?"}
+        except Exception as e2:
+            return {"error": str(e2)}
     except Exception as e:
         return {"error": str(e)}
 

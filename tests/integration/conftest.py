@@ -5,7 +5,7 @@ Adds a pytest marker for integration tests that can be excluded
 from the default test run with `-m "not integration"`.
 """
 
-import pytest
+import pytest  # noqa: F401 — plugin hooks discovered by pytest
 
 
 def pytest_configure(config):

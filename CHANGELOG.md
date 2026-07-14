@@ -9,15 +9,26 @@
 - **content-script.js had no source file** — the 6KB original was overwritten by terser in-place. Restored as `extension/content-script.src.js` so the unminified source is editable.
 
 ### Added
-- **`VERSION` file** — single source of truth at `2.3.1`. All versioned files now match: `manifest.json` (ext → 2.3.1), `plugin.yaml` (1.3.0 → 2.3.1), `package.json` (1.0.0 → 2.3.1).
+- **`VERSION` file** — single source of truth at `2.4.0`. All versioned files now match: `manifest.json` (ext → 2.4.0), `plugin.yaml` (1.3.0 → 2.4.0), `package.json` (1.0.0 → 2.4.0).
 - **ESLint config** (`eslint.config.js`) — JS linting for extension and test files with `caughtErrors: none`. Covers 8 source files. Source files produce 0 warnings; test files produce 21 (mocks/unused destructuring, accepted).
 - **`.pre-commit-config.yaml`** — ruff check + ruff-format on every commit.
 - **`.github/dependabot.yml`** — weekly updates for pip, npm, and GitHub Actions deps.
 - **`make install` target** — single command to install all Python + Node deps.
+- **E2E integration tests** — 4 tests against real Chromium via CDP (navigate, eval, screenshot, tab-list). Requires chromium-headless-shell. Run with `make test-integration`.
+- **`browser_relay/` package** — shared utilities properly packaged for MCP server and plugin.
+- **`make test-integration` target** — runs E2E tests separately from unit tests.
 
 ### Changed
+- **Plugin is now self-contained** — inlines all shared utilities directly. No external imports needed. Plugin works standalone when copied to `~/.hermes/plugins/`.
+- **Plugin auto-starts relay server** — `_ensure_relay()` starts `server.py` if not already running when first tool call fails. No manual relay start needed.
+- **Plugin.yaml updated** — `pip_dependencies` now lists aiohttp, websockets, Pillow, mcp.
+- **README rewritten for Hermes-first** — title, quick start, docs all lead with Hermes plugin install path. CLI/MCP/HTTP API are secondary sections.
+- **SETUP.md rewritten** — Hermes plugin install flow is the primary setup path.
+- **AGENTS.md rewritten** — reflects plugin-first architecture.
 - **`capture_server.py` archived** — moved from project root to `archive/`. The relay server (`server.py`) has handled capture since v1.2.0.
 - **ESLint `no-unused-vars`**: disabled for catch param bindings (`caughtErrors: none`) — standard practice for silent catch blocks with inline comments.
+- **`shared.py` moved to `browser_relay/` package** — root `shared.py` removed. Both MCP server and plugin import from `browser_relay.shared`.
+- **Version bump to 2.4.0** — all version files in sync.
 
 ## v2.3.1 (2026-07-13)
 
