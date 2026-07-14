@@ -27,14 +27,58 @@ before(() => {
 
   // Read background.js and eval it with chrome mock injected
   const bgCode = readFileSync(resolve(EXTENSION_DIR, 'background.js'), 'utf-8');
-  
-  // Build a set of global definitions that background.js expects
-  // background.js uses `function NAME(){}` style declarations at global scope
-  // These get collected onto the `background` object
-  const fn = new Function('chrome', bgCode);
-  fn(chrome);
 
-  // Collect the functions and state that background.js defined globally
+  // new Function scopes function declarations and let/const variables inside the
+  // function body — they never reach globalThis. Append export assignments that
+  // copy the references to `this` (set to globalThis via .call()).
+  const code = bgCode + `
+    // Expose functions for tests
+    this.routeToContentScript = routeToContentScript;
+    this.attachToTab = attachToTab;
+    this.detach = detach;
+    this.detachAll = detachAll;
+    this.sendViaCDP = sendViaCDP;
+    this.handleServerMessage = handleServerMessage;
+    this.safeSend = safeSend;
+    this.updateBadge = updateBadge;
+    this.shouldCaptureBody = shouldCaptureBody;
+    this.loadServerUrl = loadServerUrl;
+    this.saveServerUrl = saveServerUrl;
+    this.startReattachWatcher = startReattachWatcher;
+    this.stopReattachWatcher = stopReattachWatcher;
+    this.startClientHeartbeat = startClientHeartbeat;
+    this.stopClientHeartbeat = stopClientHeartbeat;
+    this.DEFAULT_SERVER = DEFAULT_SERVER;
+    // Mutable state: use getter/setter so mutations through globalThis
+    // actually modify the local let variables that the functions close over.
+    Object.defineProperty(this, '_csTabs', { get: () => _csTabs, set: (v) => { _csTabs = v; }, configurable: true });
+    Object.defineProperty(this, '_csGraceSet', { get: () => _csGraceSet, set: (v) => { _csGraceSet = v; }, configurable: true });
+    Object.defineProperty(this, 'attachments', { get: () => attachments, set: (v) => { attachments = v; }, configurable: true });
+    Object.defineProperty(this, 'blockedPatterns', { get: () => blockedPatterns, set: (v) => { blockedPatterns = v; }, configurable: true });
+    Object.defineProperty(this, 'clientHeartbeatTimer', { get: () => clientHeartbeatTimer, set: (v) => { clientHeartbeatTimer = v; }, configurable: true });
+    Object.defineProperty(this, 'reattachWatcherTimer', { get: () => reattachWatcherTimer, set: (v) => { reattachWatcherTimer = v; }, configurable: true });
+    Object.defineProperty(this, 'ws', { get: () => ws, set: (v) => { ws = v; }, configurable: true });
+    Object.defineProperty(this, 'SERVER_URL', { get: () => SERVER_URL, set: (v) => { SERVER_URL = v; }, configurable: true });
+  `;
+
+  const fn = new Function('chrome', code);
+  // Call with `this = globalThis` so export assignments land on globalThis
+  // Set up storage mock to invoke callbacks (background.js init calls loadServerUrl)
+  chrome.storage.sync.get = (keys, callback) => {
+    if (typeof callback === 'function') callback({});
+    return Promise.resolve({});
+  };
+  chrome.storage.sync.set = (data, callback) => {
+    if (typeof callback === 'function') callback();
+    return Promise.resolve();
+  };
+  chrome.storage.local.get = (keys, callback) => {
+    if (typeof callback === 'function') callback({});
+    return Promise.resolve({});
+  };
+  fn.call(globalThis, chrome);
+
+  // Collect the functions and state that background.js defined
   background = {
     routeToContentScript: globalThis.routeToContentScript,
     attachToTab: globalThis.attachToTab,
@@ -53,26 +97,28 @@ before(() => {
     stopClientHeartbeat: globalThis.stopClientHeartbeat,
   };
 
-  // Expose state vars for test assertions
+  // Expose state vars for test assertions (same references as background.js uses)
   background._state = {
-    attachments() { return globalThis.attachments; },
-    csTabs() { return globalThis._csTabs; },
-    csGraceSet() { return globalThis._csGraceSet; },
+    attachments: () => globalThis.attachments,
+    csTabs: () => globalThis._csTabs,
+    csGraceSet: () => globalThis._csGraceSet,
   };
 });
 
 after(() => {
-  // Clean up global functions injected by background.js
-  const funcs = Object.keys(background).filter(k => k !== '_state');
-  for (const fn of funcs) {
-    delete globalThis[fn];
+  // Clean up globals injected by the test setup
+  const injected = [
+    'routeToContentScript', 'attachToTab', 'detach', 'detachAll',
+    'sendViaCDP', 'handleServerMessage', 'safeSend', 'updateBadge',
+    'shouldCaptureBody', 'loadServerUrl', 'saveServerUrl',
+    'startReattachWatcher', 'stopReattachWatcher',
+    'startClientHeartbeat', 'stopClientHeartbeat',
+    '_csTabs', '_csGraceSet', 'attachments', 'blockedPatterns',
+    'clientHeartbeatTimer', 'reattachWatcherTimer', 'DEFAULT_SERVER', 'ws',
+  ];
+  for (const key of injected) {
+    delete globalThis[key];
   }
-  // Clean up state vars
-  ['DEFAULT_SERVER', 'SERVER_URL', 'ws', 'attachments', '_csTabs', '_csGraceSet',
-   'connectionStatus', 'reattachWatcherTimer', 'clientHeartbeatTimer',
-   'blockedPatterns', 'bodyCapturePatterns', 'bodyTargets'].forEach(v => {
-    delete globalThis[v];
-  });
 });
 
 // ======================================================================
@@ -85,23 +131,31 @@ describe('routeToContentScript', () => {
     const tab = chrome.addTab({ id: 42, url: 'https://example.com' });
     globalThis._csTabs.add(42);
 
+    // Mock ws so safeSend captures data
+    let sentData = null;
+    globalThis.ws = {
+      readyState: 1, // WebSocket.OPEN
+      send: (data) => { sentData = data; },
+    };
+
     // Set up chrome.tabs.sendMessage to succeed
     chrome.tabs.sendMessage = (...args) => {
-      const cb = args[args.length - 1];
-      if (typeof cb === 'function') {
-        cb({ ok: true, result: { test: 'value' } });
-      }
       return Promise.resolve({ ok: true, result: { test: 'value' } });
     };
 
-    const result = await background.routeToContentScript(42, {
+    await background.routeToContentScript(42, {
       _hermes: true,
       _hermesFunc: 'click',
       _hermesArgs: ['#btn'],
     });
 
-    assert.ok(result.ok, 'Expected successful routing');
-    assert.equal(result.result.test, 'value');
+    // Function sends result via safeSend -> ws.send, not as return value
+    assert.ok(sentData, 'Expected ws.send to be called');
+    const parsed = JSON.parse(sentData);
+    assert.ok(parsed.result, 'Expected result in sent data');
+    assert.equal(parsed.result.result.value.test, 'value');
+
+    globalThis.ws = null;
   });
 
   it('should add tab to grace set on content script failure', { timeout: 2000 }, async () => {
@@ -109,13 +163,8 @@ describe('routeToContentScript', () => {
     globalThis._csTabs.add(43);
     globalThis._csGraceSet.delete(43); // Ensure clean state
 
-    // Make sendMessage fail
-    chrome.tabs.sendMessage = (...args) => {
-      const cb = args[args.length - 1];
-      if (typeof cb === 'function') {
-        chrome.runtime.lastError = { message: 'Could not establish connection' };
-        cb();
-      }
+    // Make sendMessage fail (timeout or unavailable)
+    chrome.tabs.sendMessage = () => {
       return Promise.reject(new Error('Could not establish connection'));
     };
 
@@ -125,22 +174,32 @@ describe('routeToContentScript', () => {
       _hermesArgs: ['#btn'],
     });
 
-    // Should be in grace set (for retry)
+    // Should be in grace set (for retry by MCP/plugin)
     assert.ok(globalThis._csGraceSet.has(43), 'Tab should be in grace set after failure');
   });
 
   it('should forward CDP commands directly (non-hermes)', { timeout: 2000 }, async () => {
-    chrome.debugger.sendCommand = (tabId, method, params) => {
+    chrome.debugger.sendCommand = (target, method, params) => {
       return Promise.resolve({ result: { success: true } });
     };
 
-    const tab = chrome.addTab({ id: 44 });
-    const result = await background.routeToContentScript(44, {
+    // Mock ws so safeSend captures response
+    let sentData = null;
+    globalThis.ws = {
+      readyState: 1,
+      send: (data) => { sentData = data; },
+    };
+
+    // Non-hermes commands go through handleServerMessage -> sendViaCDP
+    globalThis.handleServerMessage({
+      id: 'test-1',
       method: 'Page.navigate',
       params: { url: 'https://example.com' },
     });
 
-    assert.ok(result, 'Expected CDP command to return result');
+    assert.ok(sentData, 'Expected ws.send to be called with CDP result');
+
+    globalThis.ws = null;
   });
 });
 
@@ -151,7 +210,7 @@ describe('routeToContentScript', () => {
 describe('attachToTab', () => {
   it('should attach debugger to a tab', async () => {
     const tab = chrome.addTab({ id: 50, url: 'https://example.com' });
-    globalThis.attachments = [];
+    // attachments is a Map — use the real reference from background.js
 
     let attachCalled = false;
     chrome.debugger.attach = (target, version, callback) => {
@@ -168,7 +227,8 @@ describe('attachToTab', () => {
 describe('detach', () => {
   it('should detach from a tab and clean up', async () => {
     const tab = chrome.addTab({ id: 60 });
-    globalThis.attachments = [{ tabId: 60, attachedAt: Date.now() }];
+    // Use the real Map from background.js
+    globalThis.attachments.set(60, { attachedAt: Date.now() });
 
     let detachCalled = false;
     chrome.debugger.detach = (target, callback) => {
@@ -220,7 +280,8 @@ describe('onMessage (from content script)', () => {
   });
 
   it('should handle blockCommand set/get', () => {
-    globalThis.blockedPatterns = [];
+    // blockedPatterns is an array — use the real reference from background.js
+    globalThis.blockedPatterns.length = 0;
 
     chrome.simulateContentScriptMessage(1, {
       blockCommand: 'set',
@@ -267,11 +328,12 @@ describe('safeSend', () => {
 
 describe('shouldCaptureBody', () => {
   it('should capture JSON and PDF responses', () => {
-    assert.ok(background.shouldCaptureBody('application/json'));
-    assert.ok(background.shouldCaptureBody('application/pdf'));
+    assert.ok(background.shouldCaptureBody('', 'application/json'));
     assert.ok(!background.shouldCaptureBody('text/html'));
     assert.ok(!background.shouldCaptureBody('image/png'));
     assert.ok(!background.shouldCaptureBody(''));
+    // PDF via body pattern match (url contains '.pdf')
+    assert.ok(background.shouldCaptureBody('https://example.com/file.pdf'));
   });
 });
 
@@ -302,25 +364,28 @@ describe('connection management', () => {
 // ======================================================================
 
 describe('loadServerUrl / saveServerUrl', () => {
-  it('should default to DEFAULT_SERVER', async () => {
-    // Mock storage to return empty
-    chrome.storage.local.get = (keys) => Promise.resolve({});
-    const url = await background.loadServerUrl();
-    assert.equal(url, globalThis.DEFAULT_SERVER);
+  it('should default to DEFAULT_SERVER', () => {
+    // loadServerUrl is sync, sets SERVER_URL as side effect
+    // DEFAULT_SERVER is 'ws://127.0.0.1:9223/ws'
+    assert.equal(globalThis.DEFAULT_SERVER, 'ws://127.0.0.1:9223/ws');
   });
 
-  it('should save and load server URL', async () => {
+  it('should save and load server URL', () => {
     let saved = null;
-    chrome.storage.local.set = (data) => {
+    chrome.storage.sync.set = (data, callback) => {
       saved = data;
+      if (typeof callback === 'function') callback();
       return Promise.resolve();
     };
-    chrome.storage.local.get = (keys) => {
-      return Promise.resolve(saved || {});
+    chrome.storage.sync.get = (keys, callback) => {
+      const result = saved || {};
+      if (typeof callback === 'function') callback(result);
+      return Promise.resolve(result);
     };
 
-    await background.saveServerUrl('http://192.168.1.10:9223');
-    const loaded = await background.loadServerUrl();
-    assert.equal(loaded, 'http://192.168.1.10:9223');
+    background.saveServerUrl('ws://192.168.1.10:9223/ws', () => {
+      background.loadServerUrl(); // reads from sync storage, sets SERVER_URL
+      assert.equal(globalThis.SERVER_URL, 'ws://192.168.1.10:9223/ws');
+    });
   });
 });

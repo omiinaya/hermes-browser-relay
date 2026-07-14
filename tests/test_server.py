@@ -35,6 +35,7 @@ def _build_app():
     app.router.add_get("/", relay.handle_status)
     app.router.add_get("/cdp", relay.handle_cdp_get)
     app.router.add_post("/cdp", relay.handle_cdp_post)
+    app.router.add_get("/events", relay.handle_events_sse)
     app.router.add_get("/recent", relay.handle_recent)
     app.router.add_get("/stats", relay.handle_status)
     app.router.add_get("/tabs", relay.handle_tabs_list)

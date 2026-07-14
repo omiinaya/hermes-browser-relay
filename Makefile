@@ -9,7 +9,7 @@ help:  ## Show available targets
 test: test-python test-mcp test-ext  ## Run all tests
 
 test-python:  ## Run relay server tests
-	python3 -m pytest tests/ $(PYTEST_FLAGS)
+	.venv/bin/python -m pytest tests/ $(PYTEST_FLAGS)
 
 test-mcp:  ## Run MCP server tests
 	python3 -m pytest mcp-server/tests/ $(PYTEST_FLAGS)
@@ -18,7 +18,11 @@ test-ext:  ## Run extension tests
 	node --test tests/extensions/hermes-helper.test.js
 
 lint:  ## Lint Python code with ruff
-	ruff check .
+	truff check .
+
+minify-ext:  ## Minify content-script.js using terser (via npx)
+	npx terser extension/content-script.js -o extension/content-script.js --compress --mangle --comments false 2>/dev/null || \
+	  echo "Note: content-script.js is maintained in minified form; terser is optional."
 
 fmt:  ## Format Python code with ruff
 	ruff format --check .
