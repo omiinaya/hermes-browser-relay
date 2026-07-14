@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/extensions/*.test.js",
+    "test": "node --test --test-force-exit tests/extensions/*.test.js",
     "test:watch": "node --test --watch tests/extensions/*.test.js"
   },
   "devDependencies": {
