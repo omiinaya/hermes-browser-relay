@@ -51,6 +51,37 @@ function createPage(html = '<html><body></body></html>') {
   // Set readyState to complete (jsdom defaults to 'loading')
   Object.defineProperty(doc, 'readyState', { value: 'complete', configurable: true });
 
+  // ----- Mock getBoundingClientRect -----
+  // jsdom has no layout engine, so all elements report width=0, height=0.
+  // hermes-helper.js filters zero-size elements, breaking snapshot/click/find/clickText tests.
+  // We patch the prototype to return dimensions based on inline style, with sensible defaults.
+  const origGetBoundingClientRect = win.Element.prototype.getBoundingClientRect;
+  win.Element.prototype.getBoundingClientRect = function() {
+    // Respect display:none, hidden attribute, and hidden input types
+    if (this.style.display === 'none' || this.hidden || this.type === 'hidden') {
+      return { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 };
+    }
+    const rect = origGetBoundingClientRect.call(this);
+    const style = this.style;
+    const w = parseInt(style.width, 10) || rect.width || 100;
+    const h = parseInt(style.height, 10) || rect.height || 20;
+    return {
+      x: rect.x || 0, y: rect.y || 0,
+      width: w, height: h,
+      top: rect.top || 0, right: w, bottom: h, left: rect.left || 0,
+    };
+  };
+
+  // ----- Mock innerText -----
+  // jsdom doesn't support innerText (only textContent), but hermes-helper.js uses
+  // body.innerText in docInfo(). Provide a fallback getter.
+  if (doc.body && typeof doc.body.innerText === 'undefined') {
+    Object.defineProperty(doc.body, 'innerText', {
+      get() { return this.textContent || ''; },
+      configurable: true,
+    });
+  }
+
   // Run hermes-helper.js
   win.eval(helperCode);
 
@@ -126,7 +157,7 @@ describe('snapshot', () => {
     const snap = hermes.snapshot(false);
     assert.equal(snap.items.length, 2, 'Should find 2 interactive elements');
     
-    const btn = snap.items.find(i => i.tag === 'button');
+    const btn = snap.items.find(i => i.tag.startsWith('button'));
     assert.ok(btn, 'Should find button');
     assert.ok(btn.ref.startsWith('e'), 'Should have ref ID');
     assert.equal(btn.text, 'Submit');
@@ -259,8 +290,8 @@ describe('find', () => {
       </body></html>
     `);
     const result = hermes.find('Save');
-    assert.equal(result.count, 1);
-    assert.equal(result.results[0].text, 'Save Changes');
+    assert.equal(result.length, 1);
+    assert.equal(result[0].text, 'Save Changes');
   });
 
   it('should handle multiple matches', () => {
@@ -271,14 +302,13 @@ describe('find', () => {
       </body></html>
     `);
     const result = hermes.find('Submit');
-    assert.ok(result.count >= 1, 'Should find at least 1 matching element');
+    assert.ok(result.length >= 1, 'Should find at least 1 matching element');
   });
 
   it('should return empty for no matches', () => {
     const { hermes } = createPage();
     const result = hermes.find('zzz_nonexistent');
-    assert.equal(result.count, 0);
-    assert.deepEqual(result.results, []);
+    assert.equal(result.length, 0);
   });
 });
 

@@ -1,9 +1,35 @@
-# browser-relay — Claude Code Quickstart
+# browser-relay — Agent Quickstart
 
-**First, read [AGENTS.md](./AGENTS.md)**.
+This is a CDP bridge for remote Chrome browser control.
 
-## One-Line Setup
-See SETUP.md for step-by-step instructions.
+## First-Time Setup
+
+```bash
+# Install deps
+pip install aiohttp websockets Pillow 'mcp>=1.0.0'
+
+# Start relay
+python3 server.py
+```
+
+## Key Commands
+
+| Action | Command |
+|--------|---------|
+| Start relay | `python3 server.py` |
+| Check status | `python3 cdp.py status` |
+| Run tests | `python3 -m pytest tests/ mcp-server/tests/ -v --tb=short` |
+| Test extension | `node --test tests/extensions/hermes-helper.test.js` |
 
 ## Structure
-Check README.md and AGENTS.md for project layout.
+
+- `server.py` — CDP relay (HTTP + WS)
+- `mcp-server/server.py` — MCP tool server (stdio)
+- `extension/` — Chrome extension (background.js, content-script.js, hermes-helper.js)
+- `plugins/browser-relay/` — Hermes plugin
+- `shared.py` — Shared utilities between MCP and plugin
+- `cdp.py` — CLI client
+
+## Architecture
+
+Extension connects via WebSocket to relay. Relay forwards CDP commands. Content script (injected into all pages) handles DOM operations directly without CDP overhead. Automatic fallback to CDP when CS is mid-navigation.

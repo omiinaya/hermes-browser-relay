@@ -1,22 +1,31 @@
-.PHONY: build test lint fmt fix clean help
+.PHONY: test test-python test-mcp test-ext lint fmt fix clean
+
+PYTEST_FLAGS = -v --tb=short
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-build:  ## Build the project
-	@echo "See AGENTS.md for build instructions"
+test: test-python test-mcp test-ext  ## Run all tests
 
-test:  ## Run tests
-	@echo "See AGENTS.md for test instructions"
+test-python:  ## Run relay server tests
+	python3 -m pytest tests/ $(PYTEST_FLAGS)
 
-lint:  ## Lint code
-	@echo "Linting not configured"
+test-mcp:  ## Run MCP server tests
+	python3 -m pytest mcp-server/tests/ $(PYTEST_FLAGS)
 
-fmt:  ## Format code
-	@echo "Formatting not configured"
+test-ext:  ## Run extension tests
+	node --test tests/extensions/hermes-helper.test.js
 
-fix: lint fmt  ## Auto-fix issues
+lint:  ## Lint Python code with ruff
+	ruff check .
+
+fmt:  ## Format Python code with ruff
+	ruff format --check .
+
+fix:  ## Auto-fix lint issues
+	ruff check --fix .
+	ruff format .
 
 clean:  ## Clean build artifacts
-	rm -rf node_modules dist target __pycache__
+	rm -rf node_modules dist target __pycache__ .pytest_cache .ruff_cache

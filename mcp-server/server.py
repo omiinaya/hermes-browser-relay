@@ -14,23 +14,22 @@ import base64
 import time
 import urllib.request
 import urllib.error
-from typing import Any
 
 # Ensure the project root is on sys.path for shared.py import
 _shared_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _shared_dir not in __import__('sys').path:
     __import__('sys').path.insert(0, _shared_dir)
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-import websockets.sync.client
+import websockets.sync.client  # noqa: E402
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent, ImageContent
+from mcp.server import Server  # noqa: E402
+from mcp.server.stdio import stdio_server  # noqa: E402
+from mcp.types import Tool, TextContent, ImageContent  # noqa: E402
 
 # Import shared utilities (snapshot cache, JS quoting, result parsing)
-from shared import (
+from shared import (  # noqa: E402
     js_quote,
     parse_result,
     cache_snapshot,

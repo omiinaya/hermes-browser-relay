@@ -840,7 +840,7 @@ async def main():
     print(f"  → {Path(__file__).parent / 'extension'}")
     print()
     print("  Then: attach to a tab, then POST commands to /cdp")
-    print(f"  or: MCP server connects to ws://.../mcp-ws (persistent, no HTTP POST overhead)")
+    print("  or: MCP server connects to ws://.../mcp-ws (persistent, no HTTP POST overhead)")
     print(f"  Heartbeat: every {HEARTBEAT_INTERVAL}s, timeout at {HEARTBEAT_TIMEOUT}s")
     print()
 

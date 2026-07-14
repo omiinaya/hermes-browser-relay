@@ -1,34 +1,41 @@
 ---
 name: browser-relay
 description: "Chrome DevTools Protocol relay — control browser remotely via chrome.debugger API + WebSocket bridge"
-stack: [node, typescript]
-deps: [node, npm]
+stack: [python, javascript]
+deps: [python3, node]
 ---
 
 # browser-relay
 
-Chrome DevTools Protocol relay — control browser remotely via chrome.debugger API + WebSocket bridge
+Chrome DevTools Protocol relay — control browser remotely via chrome.debugger API + WebSocket bridge.
 
 ## Stack
-- **node, typescript**
+- **Python 3.10+** — Relay server (`server.py`), MCP server (`mcp-server/server.py`), Hermes plugin (`plugins/`)
+- **JavaScript** — Chrome extension (`extension/background.js`, `extension/content-script.js`, `extension/hermes-helper.js`)
 
 ## Quick Reference
 
 ```bash
-# Build
-npm install && npm run build
+# Relay server
+python3 server.py
 
-# Test
-npm test
+# MCP server
+python3 -m mcp-server.server
+
+# Python tests
+python3 -m pytest tests/ mcp-server/tests/ -v
+
+# Extension tests
+node --test tests/extensions/hermes-helper.test.js
+
+# Install Node dependencies
+npm install
 ```
-
-## Dependencies
-node, npm
 
 ## Documentation
 | Document | Purpose |
 |---|---|
-| [CLAUD.md](./CLAUDE.md) | Claude Code quickstart |
+| [README.md](./README.md) | Full human-readable docs |
+| [CHANGELOG.md](./CHANGELOG.md) | Version history |
 | [SETUP.md](./SETUP.md) | Step-by-step setup |
 | [Makefile](./Makefile) | Build/test/lint targets |
-| [README.md](./README.md) | Human-readable docs |

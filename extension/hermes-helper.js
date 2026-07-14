@@ -523,7 +523,8 @@
       var el = null;
       if (isSelector) {
         el = document.querySelector(identifier);
-      } else {
+      }
+      if (!el) {
         el = H._findFieldByLabel(identifier);
       }
       if (!el) {

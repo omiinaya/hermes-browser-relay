@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.3.1 (2026-07-13)
+
+### Added
+- **Extension test fixes** — 11 failing tests fixed (getBoundingClientRect mock, innerText polyfill, find return-format correction). Found and fixed production bug: `formFill` misidentified labels with spaces as CSS selectors.
+- **CI improvements** — test workflow now runs 3 jobs: Python relay tests, Python MCP tests, extension tests, plus ruff lint.
+- **Ruff lint cleanup** — 20 violations fixed (unused imports, module-level import ordering, semicolons in Python).
+
+### Changed
+- **README rewritten for v2.3.0** — covers CS fast path, handler refactor, shared module, all v2.x features. Architecture diagram updated.
+- **Docs refreshed** — AGENTS.md, SETUP.md, CLAUDE.md, IMPROVEMENTS.md all brought up to date.
+- **`formFill` label-vs-selector resolution** — now tries CSS selector first, falls back to label lookup. Previously, labels with spaces (e.g. "First Name") were incorrectly treated as CSS selectors.
+
 ## v2.3.0 (2026-07-13)
 
 ### Changed
