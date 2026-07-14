@@ -27,9 +27,15 @@ Every gap from the original P1–P11 backlog, the v1.5.0 additions (P12–P18), 
 | P13 | Extension test suite | 28 tests for hermes-helper.js using JSDOM + chrome mocks |
 | P14 | MCP server test suite | 24 tests with mocked CDP layer |
 | P15 | Debounced mutation observer | 250ms settle window replaces 500ms throttle |
-| P16 | Full test coverage | 91 tests (39 relay + 24 MCP + 28 extension), all passing |
+| P16 | Full test coverage | 111 tests (63 Python + 48 JS), all passing |
 | P17 | CS fast-path parity | 46 MCP tools ↔ 46 plugin tools, exactly matching |
-| P18 | CI lint | Ruff check against all Python source |
+| P18 | CI lint | Ruff check + ESLint against all Python and JS source |
+| P19 | Makefile targets fixed | `lint` (truff→ruff), `test-ext` (48 tests + `--force-exit`), `test-mcp` (`.venv`), `make install` |
+| P20 | Extension source restored | `content-script.src.js` — editable 6KB source alongside minified version |
+| P21 | ESLint + pre-commit | ESLint flat config for all JS, pre-commit hooks (ruff) |
+| P22 | Version sync | `VERSION`, `manifest.json`, `plugin.yaml`, `package.json` all at 2.3.1 |
+| P23 | Dependabot | Weekly pip/npm/actions updates |
+| P24 | Dead code archived | `capture_server.py` → `archive/` |
 
 ## Final Stats
 
@@ -38,7 +44,10 @@ Every gap from the original P1–P11 backlog, the v1.5.0 additions (P12–P18), 
 | MCP + Plugin tools | **46** each |
 | Relay endpoints | 18 |
 | Extension actions | 10 |
-| Tests | **91** (all passing) |
-| Lint | Clean (ruff, 0 violations) |
-| Version | **2.3.0** |
-| Commits | 50+ |
+| Tests | **111** (63 Python + 48 JS, all passing) |
+| Python lint | Clean (ruff, 0 violations) |
+| JS lint | Clean (ESLint, 0 source warnings, 21 test-file warnings accepted) |
+| Pre-commit hooks | ruff check + ruff-format |
+| Dependabot | pip (weekly), npm (weekly), actions (weekly) |
+| Version | **2.4.0** |
+| Commits | 75+ |
