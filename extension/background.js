@@ -1,4 +1,4 @@
-// CDP Bridge — Background Service Worker (v1.3.0)
+// CDP Bridge — Background Service Worker (v2.4.0)
 // Connects chrome.debugger to Hermes Agent via WebSocket
 // Features: heartbeat keepalive, exponential backoff reconnect,
 // tab-switch auto-reattach, robust error handling

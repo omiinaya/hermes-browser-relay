@@ -22,6 +22,9 @@ test-ext: node_modules  ## Run extension tests (all 3 test files)
 
 lint:  ## Lint Python code with ruff
 	ruff check .
+lint-js:  ## Lint JavaScript with ESLint
+	npm run lint
+lint-all: lint lint-js  ## Run all linters
 
 minify-ext:  ## Minify content-script.js using terser (via npx)
 	npx terser extension/content-script.js -o extension/content-script.js --compress --mangle --comments false 2>/dev/null || \

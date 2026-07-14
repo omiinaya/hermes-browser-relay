@@ -40,7 +40,16 @@ tests/                   → pytest (relay) + node:test (extension)
 
 ## Versioning
 
-The canonical version is in `VERSION`. Before release, run `make version` (when available) or update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, and any hardcoded version strings in source.
+The canonical version is in `VERSION`. Before release, update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, and any hardcoded version strings in source. Run `make test && make lint-all` to verify.
+
+## Pre-commit Hooks
+
+Enable the project's pre-commit hooks:
+```bash
+git config core.hooksPath .githooks
+```
+
+This runs ruff lint on every commit.
 
 ## Pull Requests
 

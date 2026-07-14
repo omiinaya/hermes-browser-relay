@@ -58,4 +58,12 @@ make test           # All of the above
 make test-integration  # E2E tests (4, requires Chromium)
 make lint           # ruff check
 npm run lint        # ESLint
+make lint-all       # Both
+
+### Pre-commit Hooks
+
+Enable the project's pre-commit hooks:
+```bash
+git config core.hooksPath .githooks
 ```
+This runs `make lint` on every commit.

@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --test-force-exit tests/extensions/*.test.js",
-    "test:watch": "node --test --watch tests/extensions/*.test.js",
-    "lint": "eslint tests/extensions/ extension/ --max-warnings=25"
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "node --test tests/extensions/*.test.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

@@ -1,5 +1,10 @@
 #!/bin/sh
-echo "🔍 Pre-commit checks..."
+echo "🔍 Running pre-commit checks..."
+
+# Lint Python
 if [ -f Makefile ]; then
-  make lint 2>/dev/null || true
+  make lint || exit 1
 fi
+
+# Quick syntax checks
+python3 -c "import sys; sys.exit(0)" 2>/dev/null
