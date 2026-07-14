@@ -135,8 +135,6 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 // ====== URL Blocking via declarativeNetRequest ======
 
 let blockedPatterns = [];
-let _nextRuleId = 1000;
-
 async function updateBlockingRules(patterns) {
   blockedPatterns = patterns || [];
 
@@ -328,7 +326,7 @@ function connectWS() {
     scheduleReconnect();
   };
 
-  ws.onerror = (err) => {
+  ws.onerror = (_err) => {
     console.warn('[CDP] WebSocket connection failed — will retry');
     // onclose will fire after this, triggering reconnect
   };

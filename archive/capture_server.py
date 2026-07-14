@@ -25,6 +25,7 @@ Usage:
     python capture_server.py --bind 127.0.0.1  # localhost only (safer)
     python capture_server.py --port 9989
 """
+
 import argparse
 import asyncio
 import json
@@ -47,8 +48,8 @@ CAPTURE_FILE = CAPTURE_DIR / "capture.jsonl"
 DEFAULT_PORT = 9988
 HEARTBEAT_INTERVAL = 15
 HEARTBEAT_TIMEOUT = 45
-EVENT_BUFFER_SIZE = 1000    # Full event buffer (feeds /recent?limit=N)
-NAV_BUFFER_SIZE = 200       # Slim buffer of interesting events only
+EVENT_BUFFER_SIZE = 1000  # Full event buffer (feeds /recent?limit=N)
+NAV_BUFFER_SIZE = 200  # Slim buffer of interesting events only
 
 
 class CaptureServer:
@@ -62,12 +63,12 @@ class CaptureServer:
         self.nav_buffer = deque(maxlen=NAV_BUFFER_SIZE)
 
         self.stats = {
-            'webrequest': 0,
-            'downloads': 0,
-            'tabs': 0,
-            'cdp_events': 0,
-            'errors': 0,
-            'responses': 0,
+            "webrequest": 0,
+            "downloads": 0,
+            "tabs": 0,
+            "cdp_events": 0,
+            "errors": 0,
+            "responses": 0,
         }
 
     # ------------------------------------------------------------------
@@ -81,19 +82,21 @@ class CaptureServer:
         for f in old_files[4:]:
             f.unlink(missing_ok=True)
 
-        self.file_handle = open(CAPTURE_FILE, 'a')
+        self.file_handle = open(CAPTURE_FILE, "a")
 
         print(f"📡 Capture server v{VERSION} starting on ws://{host}:{port}")
         print(f"📁 Writing to: {CAPTURE_FILE}")
         print(f"📊 Events buffer: {EVENT_BUFFER_SIZE} (nav: {NAV_BUFFER_SIZE})")
         print()
 
-        log = logging.getLogger('capture')
+        log = logging.getLogger("capture")
         log.warning("DEPRECATED: Capture functionality has been merged into the CDP relay server (server.py :9223).")
         log.warning("This standalone capture server is kept for backward compatibility. Use :9223/recent instead.")
 
         async with websockets.serve(
-            self.handle_client, host, port,
+            self.handle_client,
+            host,
+            port,
             ping_interval=HEARTBEAT_INTERVAL,
             ping_timeout=HEARTBEAT_TIMEOUT,
         ):
@@ -118,7 +121,7 @@ class CaptureServer:
                     print(f"⚠️  Bad JSON from {remote}")
                 except Exception as e:
                     print(f"⚠️  Error: {e}")
-                    self.stats['errors'] += 1
+                    self.stats["errors"] += 1
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -129,18 +132,27 @@ class CaptureServer:
     # Event processing
     # ------------------------------------------------------------------
 
-    INTERESTING_EVENTS = frozenset({
-        "tab", "download", "response_body",
-        "webrequest",
-    })
+    INTERESTING_EVENTS = frozenset(
+        {
+            "tab",
+            "download",
+            "response_body",
+            "webrequest",
+        }
+    )
 
-    INTERESTING_WEBREQUEST = frozenset({
-        "completed", "error",
-    })
+    INTERESTING_WEBREQUEST = frozenset(
+        {
+            "completed",
+            "error",
+        }
+    )
 
-    INTERESTING_CDP = frozenset({
-        "Network.responseReceived",
-    })
+    INTERESTING_CDP = frozenset(
+        {
+            "Network.responseReceived",
+        }
+    )
 
     def _is_interesting(self, msg_type: str, msg: dict) -> bool:
         """Determine if an event is 'interesting' enough for the nav buffer."""
@@ -157,69 +169,68 @@ class CaptureServer:
         return False
 
     async def process_message(self, msg):
-        if 'ts' not in msg:
-            msg['_received'] = datetime.now(timezone.utc).timestamp() * 1000
+        if "ts" not in msg:
+            msg["_received"] = datetime.now(timezone.utc).timestamp() * 1000
 
-        msg_type = msg.get('type', msg.get('action', 'unknown'))
+        msg_type = msg.get("type", msg.get("action", "unknown"))
 
         # Connection management - don't log these
-        if msg_type in ('hello', 'pong', 'ping', 'keepalive'):
+        if msg_type in ("hello", "pong", "ping", "keepalive"):
             return
 
         # Response body events
-        if msg_type == 'response_body':
+        if msg_type == "response_body":
             await self.write_event(msg)
-            url = msg.get('url', '')
-            body = msg.get('body', '') or ''
-            b64 = msg.get('base64Encoded', False)
-            body_preview = body[:200] if not b64 else f'[base64: {len(body)} chars]'
+            url = msg.get("url", "")
+            body = msg.get("body", "") or ""
+            b64 = msg.get("base64Encoded", False)
+            body_preview = body[:200] if not b64 else f"[base64: {len(body)} chars]"
             print(f"  📄 BODY: {url[:100]}")
             print(f"     Preview: {body_preview}")
-            self.stats['responses'] += 1
+            self.stats["responses"] += 1
             return
 
         # CDP events
-        if msg_type == 'event':
+        if msg_type == "event":
             await self.write_event(msg)
-            self.stats['cdp_events'] += 1
-            method = msg.get('method', '')
-            url = msg.get('params', {}).get('response', {}).get('url',
-                   msg.get('params', {}).get('documentURL', ''))
-            if 'Network.responseReceived' in method:
+            self.stats["cdp_events"] += 1
+            method = msg.get("method", "")
+            url = msg.get("params", {}).get("response", {}).get("url", msg.get("params", {}).get("documentURL", ""))
+            if "Network.responseReceived" in method:
                 print(f"  📡 CDP: {method} {url[:100]}")
-                self.stats['responses'] += 1
-            elif 'Network.requestWillBeSent' in method:
+                self.stats["responses"] += 1
+            elif "Network.requestWillBeSent" in method:
                 pass  # too verbose
             return
 
         # Batch mode
-        if msg.get('action') == 'batch':
-            events = msg.get('events', [])
+        if msg.get("action") == "batch":
+            events = msg.get("events", [])
             for event in events:
                 await self.write_event(event)
-                et = event.get('eventType', '')
-                if et == 'request':
-                    self.stats['webrequest'] += 1
-                elif 'download' in et:
-                    self.stats['downloads'] += 1
+                et = event.get("eventType", "")
+                if et == "request":
+                    self.stats["webrequest"] += 1
+                elif "download" in et:
+                    self.stats["downloads"] += 1
             return
 
         # Individual events
         await self.write_event(msg)
 
-        if msg_type == 'webrequest':
-            self.stats['webrequest'] += 1
-        elif msg_type == 'download':
-            self.stats['downloads'] += 1
-        elif msg_type == 'tab':
-            self.stats['tabs'] += 1
+        if msg_type == "webrequest":
+            self.stats["webrequest"] += 1
+        elif msg_type == "download":
+            self.stats["downloads"] += 1
+        elif msg_type == "tab":
+            self.stats["tabs"] += 1
 
     # ------------------------------------------------------------------
     # Event writing (file + buffers)
     # ------------------------------------------------------------------
 
     async def write_event(self, event):
-        line = json.dumps(event, default=str) + '\n'
+        line = json.dumps(event, default=str) + "\n"
         self.file_handle.write(line)
         self.file_handle.flush()
         self.event_count += 1
@@ -227,44 +238,41 @@ class CaptureServer:
         # Push to in-memory buffers for real-time querying
         self.full_buffer.append(event)
 
-        msg_type = event.get('type', event.get('action', '?'))
+        msg_type = event.get("type", event.get("action", "?"))
         if self._is_interesting(msg_type, event):
             self.nav_buffer.append(event)
 
         # Live summary
-        etype = event.get('eventType', event.get('type', event.get('action', '?')))
-        if etype == 'webrequest':
-            ev = event.get('event', '')
-            url = event.get('url', '')
-            sc = event.get('statusCode', '')
-            m = event.get('method', '')
+        etype = event.get("eventType", event.get("type", event.get("action", "?")))
+        if etype == "webrequest":
+            ev = event.get("event", "")
+            url = event.get("url", "")
+            sc = event.get("statusCode", "")
+            m = event.get("method", "")
             print(f"  🌐 {ev:18s} {m} {sc} {url[:100]}")
-        elif etype == 'download':
-            ev = event.get('event', '')
-            fn = event.get('filename', event.get('url', ''))
+        elif etype == "download":
+            ev = event.get("event", "")
+            fn = event.get("filename", event.get("url", ""))
             print(f"  📥 DOWNLOAD {ev}: {fn}")
-        elif etype == 'tab':
+        elif etype == "tab":
             print(f"  🏁 NAV: {event.get('url', '')[:100]}")
-        elif etype == 'request':
-            url = event.get('url', '')
-            m = event.get('method', '')
-            sc = event.get('statusCode', '')
+        elif etype == "request":
+            url = event.get("url", "")
+            m = event.get("method", "")
+            sc = event.get("statusCode", "")
             print(f"  🌐 {m} {sc} {url[:100]}")
-        elif etype == 'navigation':
+        elif etype == "navigation":
             print(f"  🏁 NAV: {event.get('url', '')[:100]}")
-        elif 'download' in etype:
-            fn = event.get('filename', event.get('url', ''))
+        elif "download" in etype:
+            fn = event.get("filename", event.get("url", ""))
             print(f"  📥 {etype}: {fn}")
 
 
 async def main():
     parser = argparse.ArgumentParser(description="Hermes Traffic Capture Server")
-    parser.add_argument("--bind", default="0.0.0.0",
-                        help="Bind address (default: 0.0.0.0, use 127.0.0.1 for localhost only)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"Port (default: {DEFAULT_PORT})")
-    parser.add_argument("--version", action="version", version=f"capture-server v{VERSION}",
-                        help="Show version and exit")
+    parser.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0, use 127.0.0.1 for localhost only)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
+    parser.add_argument("--version", action="version", version=f"capture-server v{VERSION}", help="Show version and exit")
     args = parser.parse_args()
 
     server = CaptureServer()
@@ -277,9 +285,7 @@ async def main():
     stop = asyncio.Future()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            asyncio.get_event_loop().add_signal_handler(
-                sig, lambda s=sig: stop.set_result(None)
-            )
+            asyncio.get_event_loop().add_signal_handler(sig, lambda s=sig: stop.set_result(None))
         except NotImplementedError:
             pass
 
@@ -295,5 +301,5 @@ async def main():
         print("👋 Server stopped")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())

@@ -170,10 +170,7 @@ class TestCDP:
     @pytest.mark.asyncio
     async def test_cdp_dialog_dismiss_with_prompt(self, client):
         """Page.handleJavaScriptDialog with promptText is properly forwarded."""
-        resp = await client.post("/cdp", json={
-            "method": "Page.handleJavaScriptDialog",
-            "params": {"accept": True, "promptText": "hello"}
-        })
+        resp = await client.post("/cdp", json={"method": "Page.handleJavaScriptDialog", "params": {"accept": True, "promptText": "hello"}})
         assert resp.status == 503
         data = await resp.json()
         assert "Extension not connected" in data.get("error", "")
@@ -181,10 +178,7 @@ class TestCDP:
     @pytest.mark.asyncio
     async def test_cdp_dialog_dismiss_negative(self, client):
         """Page.handleJavaScriptDialog with accept=false."""
-        resp = await client.post("/cdp", json={
-            "method": "Page.handleJavaScriptDialog",
-            "params": {"accept": False}
-        })
+        resp = await client.post("/cdp", json={"method": "Page.handleJavaScriptDialog", "params": {"accept": False}})
         assert resp.status == 503
         data = await resp.json()
         assert "Extension not connected" in data.get("error", "")
@@ -207,16 +201,26 @@ class TestRecentEvents:
 
     @pytest.mark.asyncio
     async def test_recent_with_events(self, client, reset_state):
-        relay._event_buffer.append({
-            "type": "webrequest", "event": "completed",
-            "url": "https://api.example.com/data", "method": "GET",
-            "statusCode": 200, "_received": _time.time() * 1000,
-        })
-        relay._nav_buffer.append({
-            "type": "tab", "event": "navigated",
-            "url": "https://example.com", "title": "Example",
-            "tabId": 42, "_received": _time.time() * 1000,
-        })
+        relay._event_buffer.append(
+            {
+                "type": "webrequest",
+                "event": "completed",
+                "url": "https://api.example.com/data",
+                "method": "GET",
+                "statusCode": 200,
+                "_received": _time.time() * 1000,
+            }
+        )
+        relay._nav_buffer.append(
+            {
+                "type": "tab",
+                "event": "navigated",
+                "url": "https://example.com",
+                "title": "Example",
+                "tabId": 42,
+                "_received": _time.time() * 1000,
+            }
+        )
         resp = await client.get("/recent?mode=all")
         assert resp.status == 200
         data = await resp.json()
@@ -376,6 +380,7 @@ class TestEventSystem:
     def test_events_handler_is_callable(self):
         assert callable(relay.handle_events_sse)
         import inspect
+
         assert inspect.iscoroutinefunction(relay.handle_events_sse)
 
     def test_event_subscribers_list_empty(self, reset_state):
@@ -384,6 +389,7 @@ class TestEventSystem:
     def test_event_subscribers_add_remove(self, reset_state):
         def dummy(data):
             pass
+
         relay.event_subscribers.append(dummy)
         assert len(relay.event_subscribers) == 1
         relay.event_subscribers.remove(dummy)
@@ -420,12 +426,22 @@ class TestHandlerStructure:
     """Meta-tests: verify all handlers are properly defined."""
 
     HANDLER_NAMES = [
-        "handle_extension", "handle_cdp_post", "handle_status",
-        "handle_cdp_get", "handle_events_sse", "handle_recent",
-        "handle_tabs_list", "handle_tabs_switch", "handle_block_patterns",
-        "handle_block_patterns_get", "handle_tabs_attach", "handle_tabs_detach",
-        "handle_tabs_attachments", "handle_cdp_post_tab",
-        "handle_tabs_create", "handle_tabs_close",
+        "handle_extension",
+        "handle_cdp_post",
+        "handle_status",
+        "handle_cdp_get",
+        "handle_events_sse",
+        "handle_recent",
+        "handle_tabs_list",
+        "handle_tabs_switch",
+        "handle_block_patterns",
+        "handle_block_patterns_get",
+        "handle_tabs_attach",
+        "handle_tabs_detach",
+        "handle_tabs_attachments",
+        "handle_cdp_post_tab",
+        "handle_tabs_create",
+        "handle_tabs_close",
     ]
 
     def test_all_handlers_exist(self):

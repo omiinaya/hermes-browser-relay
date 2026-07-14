@@ -2,7 +2,6 @@
  * Mock chrome.* API for Node.js extension tests.
  * Provides complete stubs for all chrome APIs used by background.js.
  */
-import { EventEmitter } from 'node:events';
 
 class ChromeMock {
   constructor() {

@@ -7,6 +7,7 @@ Bridges Hermes Agent to a running CDP relay (:9223) so browser actions
 
 Protocol: stdio MCP — read JSON-RPC from stdin, write to stdout.
 """
+
 import json
 import os
 import io
@@ -17,8 +18,8 @@ import urllib.error
 
 # Ensure the project root is on sys.path for shared.py import
 _shared_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _shared_dir not in __import__('sys').path:
-    __import__('sys').path.insert(0, _shared_dir)
+if _shared_dir not in __import__("sys").path:
+    __import__("sys").path.insert(0, _shared_dir)
 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
@@ -37,6 +38,7 @@ from shared import (  # noqa: E402
     invalidate_cache,
     INTERACTIVE_SELECTORS,
 )
+
 # Module-level aliases for backward compat with handler code
 _js_quote = js_quote
 _parse_result = parse_result
@@ -49,35 +51,35 @@ _INTERACTIVE_SELECTORS = INTERACTIVE_SELECTORS
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
+
 def _hermes_call(func_name: str, *args, fallback: str = None, tab_id: int = None) -> dict:
     """Call __hermes.<func_name>(args) via content script fast path.
-    
+
     Attempts content script routing first (no CDP overhead). Falls back to
     Runtime.evaluate if content script is unavailable (e.g. page just navigated).
-    
+
     SMART RETRY: If CS is unavailable, waits 80ms and retries once — the content
     script is usually back by then. Catches 80%+ of navigation races.
-    
+
     Returns the full CDP result dict (use _parse_result to extract the value).
     The result format matches CDP Runtime.evaluate for backward compat.
     """
     # Try content script fast path
-    result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id,
-                  _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
-    
+    result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id, _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
+
     # Check if content script was available
     error = result.get("error", {})
     if isinstance(error, dict) and error.get("_fallback"):
         # Smart retry: wait 80ms and try CS once more
         # Content script is usually back after navigation by this point
         import time as _retry_tm
+
         _retry_tm.sleep(0.08)
-        result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id,
-                      _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
+        result = _cdp("__hermes", {}, timeout=CDP_TIMEOUT, tab_id=tab_id, _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
         error = result.get("error", {})
         if isinstance(error, dict) and error.get("_fallback"):
             # Still unavailable — fall back to Runtime.evaluate
-            js_args = ', '.join(json.dumps(a) for a in args)
+            js_args = ", ".join(json.dumps(a) for a in args)
             if fallback:
                 full_js = f"(typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})) || ({fallback})"
             else:
@@ -86,7 +88,7 @@ def _hermes_call(func_name: str, *args, fallback: str = None, tab_id: int = None
     elif isinstance(error, dict):
         # Real error from content script
         pass
-    
+
     return result
 
 
@@ -108,10 +110,12 @@ CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
 # Tab targeting — set before CDP calls to route to a specific tab attachment
 _shared_tab_id: int | None = None
 
+
 def _set_tab(arguments: dict | None) -> None:
     """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
     global _shared_tab_id
     _shared_tab_id = arguments.get("tab_id") if arguments else None
+
 
 # Shared HTTP connection for keep-alive
 _cdp_opener = urllib.request.build_opener()
@@ -126,11 +130,11 @@ _capture_opener = urllib.request.build_opener()
 _mcp_ws = None  # websockets.sync.client connection to ws://host:9223/mcp-ws
 
 # Circuit breaker for WS reconnection
-_ws_failures = 0        # consecutive WS failures
-_last_ws_ok = 0.0       # timestamp of last successful WS operation
+_ws_failures = 0  # consecutive WS failures
+_last_ws_ok = 0.0  # timestamp of last successful WS operation
 _ws_circuit_open_until = 0.0  # skip WS attempts until this time
-_WS_BREAK_THRESHOLD = 3      # consecutive failures before circuit opens
-_WS_RETRY_AFTER = 30.0       # seconds to wait before trying again
+_WS_BREAK_THRESHOLD = 3  # consecutive failures before circuit opens
+_WS_RETRY_AFTER = 30.0  # seconds to wait before trying again
 
 
 def _ensure_mcp_ws() -> bool:
@@ -212,12 +216,12 @@ def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, ta
     effective_tab_id = tab_id if tab_id is not None else _shared_tab_id
     if effective_tab_id is not None:
         body_dict["tabId"] = effective_tab_id
-    
+
     # Try persistent WebSocket first (no HTTP POST overhead)
     ws_result = _cdp_via_ws(body_dict)
     if ws_result is not None:
         return ws_result
-    
+
     # Fall back to HTTP POST
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
@@ -232,6 +236,7 @@ def _cdp(method: str, params: dict | None = None, timeout: int = CDP_TIMEOUT, ta
             if attempt == 0:
                 # Relay might be restarting — wait briefly and retry
                 import time as _tm
+
                 _tm.sleep(0.5)
                 if _wait_for_relay(timeout=3):
                     continue
@@ -263,6 +268,7 @@ def _query_capture(path: str, timeout: int = 5) -> dict:
         except urllib.error.URLError as e:
             if attempt == 0:
                 import time as _tm
+
                 _tm.sleep(0.5)
                 if _wait_for_relay(timeout=3):
                     continue
@@ -285,6 +291,7 @@ def _wait_for_relay(timeout: float = 5.0) -> bool:
     Returns True if relay became reachable, False on timeout.
     Used by _cdp() and _query_capture() to auto-recover from relay restarts."""
     import time as _t
+
     deadline = _t.time() + timeout
     while _t.time() < deadline:
         try:
@@ -315,6 +322,7 @@ def _watchdog_loop():
     """Background thread: periodically check relay health and log status changes."""
     global _connection_ok, _watchdog_running
     import time as _t
+
     _watchdog_running = True
     was_ok = False
     while _watchdog_running:
@@ -331,6 +339,7 @@ def _watchdog_loop():
 def start_watchdog():
     """Start the connection watchdog in a daemon thread."""
     import threading as _thr
+
     t = _thr.Thread(target=_watchdog_loop, daemon=True)
     t.start()
 
@@ -342,7 +351,6 @@ def start_watchdog():
 app = Server("browser-relay")
 
 
-
 # ---------------------------------------------------------------------------
 # Tool definitions — inline dict replaces 510-line list_tools()
 # ---------------------------------------------------------------------------
@@ -351,459 +359,490 @@ TOOL_DEFS = {
     "browser_navigate": {
         "description": "Navigate the browser to a URL. Returns after navigation starts.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Full URL to navigate to (e.g. https://example.com)"},
-                },
-                "required": ["url"],
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to navigate to (e.g. https://example.com)"},
             },
+            "required": ["url"],
+        },
     },
     "browser_eval": {
         "description": "Evaluate JavaScript in the current page context. Returns the result as a string. Prefer this over screenshots for reading page state \u2014 it's 10x faster.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "expression": {"type": "string", "description": "JavaScript expression to evaluate"},
-                },
-                "required": ["expression"],
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "JavaScript expression to evaluate"},
             },
+            "required": ["expression"],
+        },
     },
     "browser_hover": {
         "description": "Hover the mouse over an element by CSS selector. Dispatches CDP mouseMoved event to trigger mouseenter/mouseover for dropdowns and tooltips.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector (e.g. '.menu-item', '#tooltip-trigger')"},
-                },
-                "required": ["selector"],
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector (e.g. '.menu-item', '#tooltip-trigger')"},
             },
+            "required": ["selector"],
+        },
     },
     "browser_click": {
         "description": "Click an element by CSS selector. Finds coordinates via JS, dispatches CDP mouse events.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector (e.g. '#submit-btn', 'button.primary')"},
-                },
-                "required": ["selector"],
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector (e.g. '#submit-btn', 'button.primary')"},
             },
+            "required": ["selector"],
+        },
     },
     "browser_type": {
         "description": "Type text into an input field. Selects the field first, clears it (Ctrl+A, Delete), then inserts text.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector for the input field"},
-                    "text": {"type": "string", "description": "Text to type"},
-                },
-                "required": ["selector", "text"],
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the input field"},
+                "text": {"type": "string", "description": "Text to type"},
             },
+            "required": ["selector", "text"],
+        },
     },
     "browser_enter": {
         "description": "Press the Enter key. Use after typing into a search box or form.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_screenshot": {
         "description": "Capture a screenshot of the current page as PNG. Returns base64-encoded image data.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_status": {
         "description": "Check the CDP relay connection status \u2014 is an extension connected and attached to a tab?",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_send_cdp": {
         "description": "Send an arbitrary CDP command. Use for advanced operations not covered by other tools.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "method": {"type": "string", "description": "CDP method name (e.g. 'Page.navigate', 'Runtime.evaluate')"},
-                    "params": {"type": "object", "description": "CDP parameters as JSON object"},
-                },
-                "required": ["method"],
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "description": "CDP method name (e.g. 'Page.navigate', 'Runtime.evaluate')"},
+                "params": {"type": "object", "description": "CDP parameters as JSON object"},
             },
+            "required": ["method"],
+        },
     },
     "browser_recent_events": {
         "description": "Fetch recent browser events (navigations, downloads, requests) from the capture buffer.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 200)", "default": 20},
-                    "mode": {"type": "string", "description": "'nav' for interesting events only, 'all' for everything (default: 'nav')", "default": "nav", "enum": ["nav", "all"]},
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 200)", "default": 20},
+                "mode": {
+                    "type": "string",
+                    "description": "'nav' for interesting events only, 'all' for everything (default: 'nav')",
+                    "default": "nav",
+                    "enum": ["nav", "all"],
                 },
             },
+        },
     },
     "browser_snapshot": {
         "description": "Get an accessibility-style snapshot of the current page. Returns compact info for all interactive elements (links, buttons, inputs) with coordinates so you can interact. Faster than taking a screenshot. Auto-cached for 2s \u2014 repeat calls within that window are instant.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "full": {"type": "boolean", "description": "If true, return complete page text content as well. Default: false (compact interactive elements only).", "default": False},
+            "type": "object",
+            "properties": {
+                "full": {
+                    "type": "boolean",
+                    "description": "If true, return complete page text content as well. Default: false (compact interactive elements only).",
+                    "default": False,
                 },
             },
+        },
     },
     "browser_scroll": {
         "description": "Scroll the page in a direction or by a specific amount.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "direction": {"type": "string", "description": "Direction to scroll: 'up', 'down', 'left', 'right' (default: 'down')", "default": "down", "enum": ["up", "down", "left", "right"]},
-                    "amount": {"type": "integer", "description": "Pixels to scroll (default: viewport height / 2)", "default": 0},
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "description": "Direction to scroll: 'up', 'down', 'left', 'right' (default: 'down')",
+                    "default": "down",
+                    "enum": ["up", "down", "left", "right"],
                 },
+                "amount": {"type": "integer", "description": "Pixels to scroll (default: viewport height / 2)", "default": 0},
             },
+        },
     },
     "browser_wait_selector": {
         "description": "Wait for a CSS selector to appear in the DOM. Polls until the element exists or timeout expires.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector to wait for (e.g. '#results', '.loading-done')"},
-                    "timeout": {"type": "integer", "description": "Max seconds to wait (default: 15)", "default": 15},
-                    "state": {"type": "string", "description": "'visible' = element must be visible (not display:none), 'attached' = element exists in DOM (default: 'visible')", "default": "visible", "enum": ["visible", "attached"]},
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector to wait for (e.g. '#results', '.loading-done')"},
+                "timeout": {"type": "integer", "description": "Max seconds to wait (default: 15)", "default": 15},
+                "state": {
+                    "type": "string",
+                    "description": "'visible' = element must be visible (not display:none), 'attached' = element exists in DOM (default: 'visible')",
+                    "default": "visible",
+                    "enum": ["visible", "attached"],
                 },
-                "required": ["selector"],
             },
+            "required": ["selector"],
+        },
     },
     "browser_click_text": {
         "description": "Click an element by its visible text content. Finds the first matching element (button, link, or anything) whose text contains the given string. Slower than browser_click (searches all elements) but doesn't require a CSS selector.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Text to search for (case-insensitive partial match)"},
-                    "tag": {"type": "string", "description": "Optional: restrict to a specific tag (e.g. 'button', 'a', 'label')"},
-                },
-                "required": ["text"],
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to search for (case-insensitive partial match)"},
+                "tag": {"type": "string", "description": "Optional: restrict to a specific tag (e.g. 'button', 'a', 'label')"},
             },
+            "required": ["text"],
+        },
     },
     "browser_fill_by_label": {
         "description": "Find a form field by its label text, placeholder, or aria-label, then type text into it. Handles React-controlled inputs by dispatching native keyboard events.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string", "description": "Label text, placeholder, or aria-label to search for"},
-                    "text": {"type": "string", "description": "Text to type into the field"},
-                },
-                "required": ["label", "text"],
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Label text, placeholder, or aria-label to search for"},
+                "text": {"type": "string", "description": "Text to type into the field"},
             },
+            "required": ["label", "text"],
+        },
     },
     "browser_get_text": {
         "description": "Get the rendered text content of the current page. Returns body text stripped of HTML tags. Much faster than taking and analyzing a screenshot.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_screenshot_annotated": {
         "description": "Take a screenshot with numbered labels overlaid on interactive elements. Each [N] corresponds to a clickable element.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_key": {
         "description": "Press a keyboard key (e.g. 'Escape', 'Tab', 'ArrowDown', 'Delete', 'Backspace'). Useful for keyboard navigation and form interactions.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string", "description": "Key to press (e.g. 'Escape', 'Tab', 'ArrowDown', 'Enter', 'Delete', 'Backspace')", "default": "Escape"},
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Key to press (e.g. 'Escape', 'Tab', 'ArrowDown', 'Enter', 'Delete', 'Backspace')",
+                    "default": "Escape",
                 },
             },
+        },
     },
     "browser_select_option": {
         "description": "Select an <option> in a <select> dropdown by visible text text match.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector for the <select> element (e.g. '#country', 'select[name=state]')"},
-                    "text": {"type": "string", "description": "Visible text of the option to select (case-insensitive, exact match)"},
-                },
-                "required": ["selector", "text"],
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the <select> element (e.g. '#country', 'select[name=state]')"},
+                "text": {"type": "string", "description": "Visible text of the option to select (case-insensitive, exact match)"},
             },
+            "required": ["selector", "text"],
+        },
     },
     "browser_back": {
         "description": "Navigate back to the previous page in browser history.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_console": {
         "description": "Read recent browser console output (console.log/warn/error/debug/info messages). Returns the most recent console messages captured from the page.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max messages to return (default: 20, max: 200)", "default": 20},
-                },
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max messages to return (default: 20, max: 200)", "default": 20},
             },
+        },
     },
     "browser_list_tabs": {
         "description": "List all open browser tabs with their IDs, titles, URLs, and active status. Use this before browser_switch_tab to find the tab you want.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_attach_tab": {
         "description": "Attach the CDP debugger to a specific tab by tabId (additive \u2014 keeps existing attachments). Use browser_list_tabs to see available tabs.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tab_id": {"type": "integer", "description": "Tab ID to attach to"},
-                    "keyword": {"type": "string", "description": "URL or title keyword to search for (alternative to tab_id)"},
-                },
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to attach to"},
+                "keyword": {"type": "string", "description": "URL or title keyword to search for (alternative to tab_id)"},
             },
+        },
     },
     "browser_detach_tab": {
         "description": "Detach the CDP debugger from a specific tab by tabId. Use browser_list_attachments to see currently attached tabs.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tab_id": {"type": "integer", "description": "Tab ID to detach from"},
-                },
-                "required": ["tab_id"],
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to detach from"},
             },
+            "required": ["tab_id"],
+        },
     },
     "browser_list_attachments": {
         "description": "List currently attached tab IDs \u2014 shows which tabs have active CDP debugger connections.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_switch_tab": {
         "description": "Switch to a tab by its tab ID (from browser_list_tabs), or by URL/title keyword. Pass tabId directly, or use keyword to match against URL or title.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tab_id": {"type": "integer", "description": "Tab ID from browser_list_tabs (mutually exclusive with keyword)"},
-                    "keyword": {"type": "string", "description": "URL or title keyword to search for (mutually exclusive with tab_id)"},
-                },
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID from browser_list_tabs (mutually exclusive with keyword)"},
+                "keyword": {"type": "string", "description": "URL or title keyword to search for (mutually exclusive with tab_id)"},
             },
+        },
     },
     "browser_get_cookies": {
         "description": "Read all cookies for the current page via CDP Network.getCookies. Returns cookie name, value, domain, path, expiry, and flags.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_clear_cookies": {
         "description": "Clear all cookies for the current page via CDP Network.clearBrowserCookies.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_get_downloads": {
         "description": "List recent downloads captured by the extension. Returns download ID, URL, filename, total bytes, and state (created/changed).",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max downloads to return (default: 20, max: 50)", "default": 20},
-                },
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max downloads to return (default: 20, max: 50)", "default": 20},
             },
+        },
     },
     "browser_refresh": {
         "description": "Reload the current page. Optionally bypass cache with hardReload=true.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "hard_reload": {"type": "boolean", "description": "Bypass cache (default: false)", "default": False},
-                },
+            "type": "object",
+            "properties": {
+                "hard_reload": {"type": "boolean", "description": "Bypass cache (default: false)", "default": False},
             },
+        },
     },
     "browser_forward": {
         "description": "Navigate forward in browser history.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_get_title": {
         "description": "Get the current page title.",
         "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "type": "object",
+            "properties": {},
+        },
     },
     "browser_find": {
         "description": "Search the page for elements matching text or selector. Returns matching elements with coordinates, tag, text content, and ref IDs for clicking. Useful for finding elements without knowing their exact CSS selector.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Text to search for (case-insensitive partial match on element text content)"},
-                    "selector": {"type": "string", "description": "Optional CSS selector to narrow search scope (e.g. 'div.content', '#main')"},
-                    "max_results": {"type": "integer", "description": "Maximum results (default: 20, max: 50)", "default": 20},
-                },
-                "required": ["query"],
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text to search for (case-insensitive partial match on element text content)"},
+                "selector": {"type": "string", "description": "Optional CSS selector to narrow search scope (e.g. 'div.content', '#main')"},
+                "max_results": {"type": "integer", "description": "Maximum results (default: 20, max: 50)", "default": 20},
             },
+            "required": ["query"],
+        },
     },
     "browser_block_patterns": {
-        "description": "Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API (MV3). Pass patterns=[\\\"*.css\\\",\\\"*.jpg\\\",\\\"*analytics*\\\"] to block, or patterns=[] to clear all blocks. Supports glob-style: *.css, *analytics*, https://example.com/*",
+        "description": 'Block or allow URL patterns matching specified strings. Uses Chrome\'s declarativeNetRequest API (MV3). Pass patterns=[\\"*.css\\",\\"*.jpg\\",\\"*analytics*\\"] to block, or patterns=[] to clear all blocks. Supports glob-style: *.css, *analytics*, https://example.com/*',
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "patterns": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "URL patterns to block. Empty array to clear all blocks. Supports *.css, *analytics*, /path/* formats",
-                    },
+            "type": "object",
+            "properties": {
+                "patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "URL patterns to block. Empty array to clear all blocks. Supports *.css, *analytics*, /path/* formats",
                 },
-                "required": ["patterns"],
             },
+            "required": ["patterns"],
+        },
     },
     "browser_pdf": {
         "description": "Save the current page as a PDF document. Returns base64-encoded PDF data. Uses CDP Page.printToPDF with A4 paper size, background colors, and system fonts.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "landscape": {"type": "boolean", "description": "Landscape orientation (default: false)", "default": False},
-                    "scale": {"type": "number", "description": "Scale factor from 0.1 to 2.0 (default: 1.0)", "default": 1.0},
-                },
+            "type": "object",
+            "properties": {
+                "landscape": {"type": "boolean", "description": "Landscape orientation (default: false)", "default": False},
+                "scale": {"type": "number", "description": "Scale factor from 0.1 to 2.0 (default: 1.0)", "default": 1.0},
             },
+        },
     },
     "browser_wait_for_navigation": {
         "description": "Wait for a page navigation (tab.navigated event) to complete. Polls the relay's event buffer until a fresh navigation is detected or timeout. Returns the URL, title, and tabId of the new page. Use this after browser_click or browser_navigate when you need the page to finish loading before inspecting it.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tab_id": {"type": "integer", "description": "Tab ID to wait for navigation on (optional — defaults to active tab)"},
-                    "timeout": {"type": "integer", "description": "Max seconds to wait (default: 30)", "default": 30},
-                },
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to wait for navigation on (optional — defaults to active tab)"},
+                "timeout": {"type": "integer", "description": "Max seconds to wait (default: 30)", "default": 30},
             },
+        },
     },
     "browser_network_requests": {
         "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting response headers, or debugging network issues.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "event": {"type": "string", "description": "Filter by event type: 'completed', 'error', 'beforeRequest', 'beforeSendHeaders', 'headersReceived' (optional — returns all types)"},
-                    "since": {"type": "number", "description": "Only include events after this timestamp (epoch ms). Use the _received field from a prior call for polling", "default": 0},
-                    "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 100)", "default": 20},
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "description": "Filter by event type: 'completed', 'error', 'beforeRequest', 'beforeSendHeaders', 'headersReceived' (optional — returns all types)",
                 },
+                "since": {
+                    "type": "number",
+                    "description": "Only include events after this timestamp (epoch ms). Use the _received field from a prior call for polling",
+                    "default": 0,
+                },
+                "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 100)", "default": 20},
             },
+        },
     },
     "browser_response_body": {
         "description": "Query captured response bodies from the relay's event buffer. The extension captures response bodies for JSON/PDF responses and matched URL patterns. Returns the URL, mime type, and body content for each captured response.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "since": {"type": "number", "description": "Only include bodies captured after this timestamp (epoch ms)", "default": 0},
-                    "limit": {"type": "integer", "description": "Max bodies to return (default: 5, max: 20)", "default": 5},
-                    "include_body": {"type": "boolean", "description": "Whether to include full body content (default: false — only metadata)", "default": False},
-                },
+            "type": "object",
+            "properties": {
+                "since": {"type": "number", "description": "Only include bodies captured after this timestamp (epoch ms)", "default": 0},
+                "limit": {"type": "integer", "description": "Max bodies to return (default: 5, max: 20)", "default": 5},
+                "include_body": {"type": "boolean", "description": "Whether to include full body content (default: false — only metadata)", "default": False},
             },
+        },
     },
     "browser_set_cookie": {
         "description": "Set a browser cookie via CDP Network.setCookie. Useful for auth workflows, session injection, or bypassing login screens. Returns success/failure and cookie details.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Cookie name"},
-                    "value": {"type": "string", "description": "Cookie value"},
-                    "url": {"type": "string", "description": "Cookie URL (e.g. https://example.com). If omitted, uses domain + path"},
-                    "domain": {"type": "string", "description": "Cookie domain (e.g. .example.com)"},
-                    "path": {"type": "string", "description": "Cookie path (default: /)"},
-                    "secure": {"type": "boolean", "description": "Secure flag (default: false)", "default": False},
-                    "httpOnly": {"type": "boolean", "description": "HttpOnly flag (default: false)", "default": False},
-                    "sameSite": {"type": "string", "description": "SameSite: 'Strict', 'Lax', or 'None' (optional)"},
-                },
-                "required": ["name", "value"],
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Cookie name"},
+                "value": {"type": "string", "description": "Cookie value"},
+                "url": {"type": "string", "description": "Cookie URL (e.g. https://example.com). If omitted, uses domain + path"},
+                "domain": {"type": "string", "description": "Cookie domain (e.g. .example.com)"},
+                "path": {"type": "string", "description": "Cookie path (default: /)"},
+                "secure": {"type": "boolean", "description": "Secure flag (default: false)", "default": False},
+                "httpOnly": {"type": "boolean", "description": "HttpOnly flag (default: false)", "default": False},
+                "sameSite": {"type": "string", "description": "SameSite: 'Strict', 'Lax', or 'None' (optional)"},
             },
+            "required": ["name", "value"],
+        },
     },
     "browser_dismiss_dialog": {
         "description": "Dismiss a JavaScript dialog (alert/confirm/prompt) by accepting or cancelling it. JavaScript dialogs block all CDP commands until handled \u2014 use this tool when screenshots, navigation, or eval commands hang because a dialog is open on the page.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "accept": {"type": "boolean", "description": "True to accept/confirm, False to cancel/dismiss (default: true)"},
-                    "prompt_text": {"type": "string", "description": "Text to provide for prompt() dialogs (ignored for alert/confirm)"},
-                },
-                "required": [],
+            "type": "object",
+            "properties": {
+                "accept": {"type": "boolean", "description": "True to accept/confirm, False to cancel/dismiss (default: true)"},
+                "prompt_text": {"type": "string", "description": "Text to provide for prompt() dialogs (ignored for alert/confirm)"},
             },
+            "required": [],
+        },
     },
     "browser_upload_file": {
         "description": "Upload a file by setting the value of an <input type=file> element. Uses CDP DOM.setFileInputFiles to set the file path on the file input without requiring a file picker dialog. \\n\\nIMPORTANT: File paths must exist on the machine where Chrome is running (not the agent's machine).",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector for the <input type=file> element"},
-                    "file_paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute file path(s) to upload (on the Chrome host machine)"},
-                },
-                "required": ["selector", "file_paths"],
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the <input type=file> element"},
+                "file_paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute file path(s) to upload (on the Chrome host machine)"},
             },
+            "required": ["selector", "file_paths"],
+        },
     },
     "browser_form_fill": {
         "description": "Fill multiple form fields at once from a dictionary of {field_identifier: value} pairs. Field identifiers can be label text, placeholder, name, or CSS selector. More efficient than calling browser_fill_by_label repeatedly for multi-field forms.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "fields": {
-                        "type": "object",
-                        "description": "Dict of field identifier (label/placeholder/name) to value. E.g. {\"Email\": \"user@example.com\", \"Password\": \"secret123\", \"input[name=remember]\": \"true\"}",
-                        "additionalProperties": {"type": "string"},
-                    },
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "object",
+                    "description": 'Dict of field identifier (label/placeholder/name) to value. E.g. {"Email": "user@example.com", "Password": "secret123", "input[name=remember]": "true"}',
+                    "additionalProperties": {"type": "string"},
                 },
-                "required": ["fields"],
             },
+            "required": ["fields"],
+        },
     },
     "browser_create_tab": {
         "description": "Create a new browser tab with an optional URL. Returns the new tab's ID, title, and URL. Uses chrome.tabs.create via the extension.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to open (default: about:blank)", "default": "about:blank"},
-                    "active": {"type": "boolean", "description": "Whether the tab should be active/focused (default: true)", "default": True},
-                },
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to open (default: about:blank)", "default": "about:blank"},
+                "active": {"type": "boolean", "description": "Whether the tab should be active/focused (default: true)", "default": True},
             },
+        },
     },
     "browser_close_tab": {
         "description": "Close a browser tab by its tab ID. Uses chrome.tabs.remove via the extension. Also cleans up any CDP attachments for the closed tab.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tab_id": {"type": "integer", "description": "Tab ID to close (from browser_list_tabs)"},
-                },
-                "required": ["tab_id"],
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Tab ID to close (from browser_list_tabs)"},
             },
+            "required": ["tab_id"],
+        },
     },
     "browser_do": {
         "description": "Execute multiple browser actions sequentially in ONE tool call. Eliminates LLM thinking time between steps. Supported actions: navigate, navigate_wait (navigate + auto-ready + optional element wait), click, click_text, hover, type, enter, key, scroll, snapshot, screenshot, get_text, fill_by_label, wait_selector, back, forward, eval, wait.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Array of action objects, each with an 'action' field. See browser_do handler for supported actions.",
-                    },
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Array of action objects, each with an 'action' field. See browser_do handler for supported actions.",
                 },
-                "required": ["actions"],
             },
+            "required": ["actions"],
+        },
     },
     "browser_navigate_wait": {
         "description": "Navigate to a URL and wait until the page is fully loaded (readyState=complete). Auto-returns snapshot data (interactive elements with coordinates) so you can see the page immediately \u2014 no separate browser_snapshot call needed. Pass snapshot=False to get just the title.",
         "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Full URL to navigate to"},
-                    "timeout": {"type": "integer", "description": "Max seconds to wait for page load (default: 15, max: 60)", "default": 15},
-                },
-                "required": ["url"],
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to navigate to"},
+                "timeout": {"type": "integer", "description": "Max seconds to wait for page load (default: 15, max: 60)", "default": 15},
             },
+            "required": ["url"],
+        },
     },
 }
 
 
 TAB_ID_PROP = {"tab_id": {"type": "integer", "description": "Optional: target a specific tab attachment by ID (from browser_list_attachments)"}}
+
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
@@ -821,9 +860,11 @@ async def list_tools() -> list[Tool]:
         tools.append(tool)
     return tools
 
+
 # ---------------------------------------------------------------------------
 # Per-tool handler functions — extracted from monolithic call_tool()
 # ---------------------------------------------------------------------------
+
 
 async def _handle_browser_navigate(arguments: dict) -> list[TextContent | ImageContent]:
     url = arguments["url"]
@@ -833,15 +874,20 @@ async def _handle_browser_navigate(arguments: dict) -> list[TextContent | ImageC
         return [TextContent(type="text", text=f"Error: {result['error']}")]
     return [TextContent(type="text", text=json.dumps(result.get("result", {}), indent=2))]
 
+
 async def _handle_browser_eval(arguments: dict) -> list[TextContent | ImageContent]:
     expr = arguments["expression"]
     result = _cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True})
     value = _parse_result(result)
     return [TextContent(type="text", text=str(value))]
 
+
 async def _handle_browser_hover(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
-    result = _hermes_call("hover", selector, fallback=f"""
+    result = _hermes_call(
+        "hover",
+        selector,
+        fallback=f"""
     (() => {{
         const el = document.querySelector({_js_quote(selector)});
         if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
@@ -853,17 +899,22 @@ async def _handle_browser_hover(arguments: dict) -> list[TextContent | ImageCont
         el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
         return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and value.get("ok"):
-        return [TextContent(type="text", text=f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')}) at ({value.get('x',0)},{value.get('y',0)})")]
+        return [TextContent(type="text", text=f"Hovered '{value.get('text', '?')}' ({value.get('tag', '?')}) at ({value.get('x', 0)},{value.get('y', 0)})")]
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
     return [TextContent(type="text", text=f"Hovered {selector}")]
 
+
 async def _handle_browser_click(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
-    result = _hermes_call("click", selector, fallback=f"""
+    result = _hermes_call(
+        "click",
+        selector,
+        fallback=f"""
     (() => {{
         const el = document.querySelector({_js_quote(selector)});
         if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
@@ -875,7 +926,8 @@ async def _handle_browser_click(arguments: dict) -> list[TextContent | ImageCont
         el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
         return {{ ok: true, x: cx, y: cy, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
@@ -884,10 +936,15 @@ async def _handle_browser_click(arguments: dict) -> list[TextContent | ImageCont
     desc = f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) at ({x}, {y})"
     return [TextContent(type="text", text=desc)]
 
+
 async def _handle_browser_type(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
     text = arguments["text"]
-    result = _hermes_call("type", selector, text, fallback=f"""
+    result = _hermes_call(
+        "type",
+        selector,
+        text,
+        fallback=f"""
     (() => {{
         const el = document.querySelector({_js_quote(selector)});
         if (!el) return {{ error: 'Element not found: ' + {_js_quote(selector)} }};
@@ -899,14 +956,19 @@ async def _handle_browser_type(arguments: dict) -> list[TextContent | ImageConte
         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
         return {{ ok: true, tag: el.tagName.toLowerCase(), value_len: el.value.length }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
     return [TextContent(type="text", text=f"Typed '{text}' into {selector}")]
 
+
 async def _handle_browser_enter(arguments: dict) -> list[TextContent | ImageContent]:
-    _hermes_call("key", "Enter", fallback="""
+    _hermes_call(
+        "key",
+        "Enter",
+        fallback="""
     (() => {
         const active = document.activeElement;
         if (!active) return { error: 'No active element' };
@@ -914,8 +976,10 @@ async def _handle_browser_enter(arguments: dict) -> list[TextContent | ImageCont
         active.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
         return { ok: true };
     })()
-    """)
+    """,
+    )
     return [TextContent(type="text", text="Pressed Enter")]
+
 
 async def _handle_browser_screenshot(arguments: dict) -> list[TextContent | ImageContent]:
     result = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
@@ -925,6 +989,7 @@ async def _handle_browser_screenshot(arguments: dict) -> list[TextContent | Imag
     if data:
         return [ImageContent(type="image", data=data, mimeType="image/png")]
     return [TextContent(type="text", text="No screenshot data returned")]
+
 
 async def _handle_browser_status(arguments: dict) -> list[TextContent | ImageContent]:
     try:
@@ -937,13 +1002,19 @@ async def _handle_browser_status(arguments: dict) -> list[TextContent | ImageCon
         }
         return [TextContent(type="text", text=json.dumps(status, indent=2))]
     except Exception as e:
-        return [TextContent(type="text", text=f"CDP relay unreachable: {e}\nWatchdog: {'running' if _watchdog_running else 'stopped'} (last check: {_connection_ok})")]
+        return [
+            TextContent(
+                type="text", text=f"CDP relay unreachable: {e}\nWatchdog: {'running' if _watchdog_running else 'stopped'} (last check: {_connection_ok})"
+            )
+        ]
+
 
 async def _handle_browser_send_cdp(arguments: dict) -> list[TextContent | ImageContent]:
     method = arguments["method"]
     params = arguments.get("params", {})
     result = _cdp(method, params)
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
 
 async def _handle_browser_recent_events(arguments: dict) -> list[TextContent | ImageContent]:
     limit = min(arguments.get("limit", 20), 200)
@@ -963,12 +1034,13 @@ async def _handle_browser_recent_events(arguments: dict) -> list[TextContent | I
         elif etype == "webrequest":
             ev = e.get("event", "")
             if ev in ("completed", "error"):
-                lines.append(f"  🌐 {ev}: {e.get('method','?')} {e.get('statusCode','?')} {e.get('url','')[:100]}")
+                lines.append(f"  🌐 {ev}: {e.get('method', '?')} {e.get('statusCode', '?')} {e.get('url', '')[:100]}")
         elif etype == "response_body":
             lines.append(f"  📄 BODY: {e.get('url', '')[:100]}")
     if len(lines) <= 2:
         lines.append("  (no events yet — the capture server is running but may not have received anything)")
     return [TextContent(type="text", text="\n".join(lines))]
+
 
 async def _handle_browser_snapshot(arguments: dict) -> list[TextContent | ImageContent]:
     full = arguments.get("full", False)
@@ -977,7 +1049,10 @@ async def _handle_browser_snapshot(arguments: dict) -> list[TextContent | ImageC
         snap = cached
     else:
         # Prefer __hermes.snapshot(full) — single eval vs 50 lines of inline JS
-        result = _hermes_call("snapshot", full, fallback=f"""
+        result = _hermes_call(
+            "snapshot",
+            full,
+            fallback=f"""
     (() => {{
         const selectors = {json.dumps(_INTERACTIVE_SELECTORS)};
         const _shadowQueryAll = (root, sel) => {{
@@ -1029,12 +1104,13 @@ async def _handle_browser_snapshot(arguments: dict) -> list[TextContent | ImageC
             visible: items.filter(i => i.visible).length,
         }};
         let textContent = '';
-        if ({'true' if full else 'false'}) {{
+        if ({"true" if full else "false"}) {{
             textContent = (document.body ? document.body.innerText : '').substring(0, 30000);
         }}
         return {{ info, items, textContent }};
     }})()
-    """)
+    """,
+        )
         snap = _parse_result(result)
         _cache_snapshot(_shared_tab_id, full, snap)
     if isinstance(snap, dict) and "error" in snap:
@@ -1044,13 +1120,13 @@ async def _handle_browser_snapshot(arguments: dict) -> list[TextContent | ImageC
     lines = [
         f"📄 {info.get('title', '?')}",
         f"🌐 {info.get('url', '?')}",
-        f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')}  —  {info.get('visible','?')} visible of {info.get('total','?')} interactive elements",
+        f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')}  —  {info.get('visible', '?')} visible of {info.get('total', '?')} interactive elements",
         "",
     ]
     for it in items[:60]:
         vis = "" if it["visible"] else "⬆"
         label = it["text"] or it["placeholder"] or it["aria_label"] or it["name"] or it["href"] or it["role"]
-        lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+        lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
     if len(items) > 60:
         lines.append(f"  ... and {len(items) - 60} more (use browser_scroll to reveal)")
     if full:
@@ -1058,10 +1134,15 @@ async def _handle_browser_snapshot(arguments: dict) -> list[TextContent | ImageC
         lines.extend(["", "--- Page Text ---", str(text_content)[:20000]])
     return [TextContent(type="text", text="\n".join(lines))]
 
+
 async def _handle_browser_scroll(arguments: dict) -> list[TextContent | ImageContent]:
     direction = arguments.get("direction", "down")
     amount = arguments.get("amount", 0)
-    result = _hermes_call("scrollBy", direction, amount, fallback=f"""
+    result = _hermes_call(
+        "scrollBy",
+        direction,
+        amount,
+        fallback=f"""
     (() => {{
         const dir = {_js_quote(direction)};
         let amt = {amount or 0};
@@ -1071,18 +1152,30 @@ async def _handle_browser_scroll(arguments: dict) -> list[TextContent | ImageCon
         window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
         return {{ direction: dir, amount: amt, scrollX: window.scrollX, scrollY: window.scrollY }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and value.get("direction"):
-        return [TextContent(type="text", text=f"Scrolled {value.get('direction')} by {value.get('amount', '?')}px (pos: {value.get('scrollX',0)},{value.get('scrollY',0)})")]
+        return [
+            TextContent(
+                type="text",
+                text=f"Scrolled {value.get('direction')} by {value.get('amount', '?')}px (pos: {value.get('scrollX', 0)},{value.get('scrollY', 0)})",
+            )
+        ]
     return [TextContent(type="text", text=f"Scrolled {direction}")]
+
 
 async def _handle_browser_wait_selector(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
     timeout = min(arguments.get("timeout", 15), 60)
     state = arguments.get("state", "visible")
     if state == "attached":
-        result = _hermes_call("waitSelector", selector, timeout, "attached", fallback=f"""
+        result = _hermes_call(
+            "waitSelector",
+            selector,
+            timeout,
+            "attached",
+            fallback=f"""
     (() => {{
         const deadline = Date.now() + {timeout * 1000};
         while (Date.now() < deadline) {{
@@ -1091,9 +1184,15 @@ async def _handle_browser_wait_selector(arguments: dict) -> list[TextContent | I
         }}
         return {{ error: 'Timeout waiting for: ' + {_js_quote(selector)}, timeout_seconds: {timeout} }};
     }})()
-    """)
+    """,
+        )
     else:
-        result = _hermes_call("waitSelector", selector, timeout, "visible", fallback=f"""
+        result = _hermes_call(
+            "waitSelector",
+            selector,
+            timeout,
+            "visible",
+            fallback=f"""
     (() => {{
         const deadline = Date.now() + {timeout * 1000};
         while (Date.now() < deadline) {{
@@ -1105,16 +1204,22 @@ async def _handle_browser_wait_selector(arguments: dict) -> list[TextContent | I
         }}
         return {{ error: 'Timeout waiting for: ' + {_js_quote(selector)}, timeout_seconds: {timeout} }};
     }})()
-    """)
+    """,
+        )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"⏱️ Timed out ({timeout}s) waiting for '{selector}'")]
     return [TextContent(type="text", text=f"✅ Selector '{selector}' matched")]
 
+
 async def _handle_browser_click_text(arguments: dict) -> list[TextContent | ImageContent]:
     text_query = arguments["text"]
     tag_filter = arguments.get("tag", "")
-    result = _hermes_call("clickText", text_query, tag_filter, fallback=f"""
+    result = _hermes_call(
+        "clickText",
+        text_query,
+        tag_filter,
+        fallback=f"""
     (() => {{
         const searchText = {_js_quote(text_query)}.toLowerCase();
         const tag = {_js_quote(tag_filter)};
@@ -1135,16 +1240,22 @@ async def _handle_browser_click_text(arguments: dict) -> list[TextContent | Imag
         }}
         return {{ error: 'No element found with text: ' + searchText }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
-    return [TextContent(type="text", text=f"Clicked '{value.get('text','?')}' ({value.get('tag','?')}) by text")]
+    return [TextContent(type="text", text=f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) by text")]
+
 
 async def _handle_browser_fill_by_label(arguments: dict) -> list[TextContent | ImageContent]:
     label = arguments["label"]
     text = arguments["text"]
-    result = _hermes_call("fillByLabel", label, text, fallback=f"""
+    result = _hermes_call(
+        "fillByLabel",
+        label,
+        text,
+        fallback=f"""
     (() => {{
         const search = {_js_quote(label)}.toLowerCase();
         const _sq = (r, sel) => {{ let z=[]; try{{z=Array.from(r.querySelectorAll(sel))}}catch(e){{}} if(r.shadowRoot) z=z.concat(_sq(r.shadowRoot,sel)); for(const c of r.children||[]) z=z.concat(_sq(c,sel)); return z; }};
@@ -1184,16 +1295,19 @@ async def _handle_browser_fill_by_label(arguments: dict) -> list[TextContent | I
         input.dispatchEvent(new Event('change', {{ bubbles: true }}));
         return {{ ok: true, tag: input.tagName, type: input.type || '', value_len: input.value.length }};
     }})()
-    """)
+    """,
+    )
     fill_result = _parse_result(result)
     if isinstance(fill_result, dict) and "error" in fill_result:
         return [TextContent(type="text", text=f"Error: {fill_result['error']}")]
     return [TextContent(type="text", text=f"Filled '{label}' with '{text}'")]
 
+
 async def _handle_browser_get_text(arguments: dict) -> list[TextContent | ImageContent]:
     result = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0, 50000) : ''")
     page_text = str(_parse_result(result))
     return [TextContent(type="text", text=page_text[:40000])]
+
 
 async def _handle_browser_screenshot_annotated(arguments: dict) -> list[TextContent | ImageContent]:
     annotate_result = _hermes_call("snapshot", False)
@@ -1239,8 +1353,9 @@ async def _handle_browser_screenshot_annotated(arguments: dict) -> list[TextCont
             )
             overlay_draw.text((label_x, label_y), f"[{ref}]", fill=(0, 0, 0, 220), font=font)
             overlay_draw.rectangle(
-                [cx - a.get("w", 10)//2, cy - a.get("h", 10)//2, cx + a.get("w", 10)//2, cy + a.get("h", 10)//2],
-                outline=(255, 200, 0, 220), width=2,
+                [cx - a.get("w", 10) // 2, cy - a.get("h", 10) // 2, cx + a.get("w", 10) // 2, cy + a.get("h", 10) // 2],
+                outline=(255, 200, 0, 220),
+                width=2,
             )
 
         img = Image.alpha_composite(img, overlay)
@@ -1252,7 +1367,7 @@ async def _handle_browser_screenshot_annotated(arguments: dict) -> list[TextCont
         lines = ["Interactive elements:"]
         for idx, a in enumerate(annotations):
             label = a.get("text") or a.get("aria_label") or a.get("placeholder") or a.get("name") or a.get("role") or a.get("tag", "?")
-            lines.append(f"  [{idx+1}] \"{label[:50]}\" @({a['x']},{a['y']})")
+            lines.append(f'  [{idx + 1}] "{label[:50]}" @({a["x"]},{a["y"]})')
 
         return [
             ImageContent(type="image", data=annotated_b64, mimeType="image/png"),
@@ -1261,9 +1376,13 @@ async def _handle_browser_screenshot_annotated(arguments: dict) -> list[TextCont
     except Exception as e:
         return [TextContent(type="text", text=f"Annotation overlay error: {e}")]
 
+
 async def _handle_browser_key(arguments: dict) -> list[TextContent | ImageContent]:
     key = arguments.get("key", "Escape")
-    result = _hermes_call("key", key, fallback=f"""
+    result = _hermes_call(
+        "key",
+        key,
+        fallback=f"""
     (() => {{
         const k = {_js_quote(key)};
         const active = document.activeElement;
@@ -1274,16 +1393,22 @@ async def _handle_browser_key(arguments: dict) -> list[TextContent | ImageConten
         active.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, cancelable: true, key: k, code: k, keyCode: kc, which: kc }}));
         return {{ ok: true, key: k }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and value.get("ok"):
         return [TextContent(type="text", text=f"Pressed {key}")]
     return [TextContent(type="text", text=f"Pressed {key}")]
 
+
 async def _handle_browser_select_option(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
     text = arguments["text"]
-    result = _hermes_call("selectOption", selector, text, fallback=f"""
+    result = _hermes_call(
+        "selectOption",
+        selector,
+        text,
+        fallback=f"""
     (() => {{
         const select = document.querySelector({json.dumps(selector)});
         if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
@@ -1297,16 +1422,19 @@ async def _handle_browser_select_option(arguments: dict) -> list[TextContent | I
         select.dispatchEvent(new Event('input', {{ bubbles: true }}));
         return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
     return [TextContent(type="text", text=f"Selected option '{value.get('selected', '?')}' (value={value.get('value', '?')}) in '{selector}'")]
 
+
 async def _handle_browser_back(arguments: dict) -> list[TextContent | ImageContent]:
     _hermes_call("historyBack", fallback="window.history.back()")
     _invalidate_cache()
     return [TextContent(type="text", text="Navigated back")]
+
 
 async def _handle_browser_console(arguments: dict) -> list[TextContent | ImageContent]:
     limit = min(arguments.get("limit", 20), 200)
@@ -1347,6 +1475,7 @@ async def _handle_browser_console(arguments: dict) -> list[TextContent | ImageCo
         lines.append(f"  {icon} [{level}] {msg_text[:300]}")
     return [TextContent(type="text", text="\n".join(lines))]
 
+
 async def _handle_browser_list_tabs(arguments: dict) -> list[TextContent | ImageContent]:
     try:
         req = urllib.request.Request(f"{CDP_SERVER}/tabs")
@@ -1368,6 +1497,7 @@ async def _handle_browser_list_tabs(arguments: dict) -> list[TextContent | Image
     except Exception as e:
         return [TextContent(type="text", text=f"Error listing tabs: {e}")]
 
+
 async def _handle_browser_attach_tab(arguments: dict) -> list[TextContent | ImageContent]:
     tab_id = arguments.get("tab_id")
     keyword = arguments.get("keyword")
@@ -1379,9 +1509,7 @@ async def _handle_browser_attach_tab(arguments: dict) -> list[TextContent | Imag
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
             kw = keyword.lower()
-            matches = [t for t in result.get("tabs", [])
-                       if kw in (t.get("title", "") or "").lower()
-                       or kw in (t.get("url", "") or "").lower()]
+            matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
             if not matches:
                 return [TextContent(type="text", text=f"No tab found matching '{keyword}'")]
             tab_id = matches[0]["id"]
@@ -1399,6 +1527,7 @@ async def _handle_browser_attach_tab(arguments: dict) -> list[TextContent | Imag
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
+
 async def _handle_browser_detach_tab(arguments: dict) -> list[TextContent | ImageContent]:
     tab_id = arguments.get("tab_id")
     if not tab_id:
@@ -1415,6 +1544,7 @@ async def _handle_browser_detach_tab(arguments: dict) -> list[TextContent | Imag
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
+
 async def _handle_browser_list_attachments(arguments: dict) -> list[TextContent | ImageContent]:
     try:
         req = urllib.request.Request(f"{CDP_SERVER}/tabs/attachments")
@@ -1430,6 +1560,7 @@ async def _handle_browser_list_attachments(arguments: dict) -> list[TextContent 
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
+
 async def _handle_browser_switch_tab(arguments: dict) -> list[TextContent | ImageContent]:
     tab_id = arguments.get("tab_id")
     keyword = arguments.get("keyword")
@@ -1443,16 +1574,18 @@ async def _handle_browser_switch_tab(arguments: dict) -> list[TextContent | Imag
             if "error" in result:
                 return [TextContent(type="text", text=f"Error: {result['error']}")]
             kw = keyword.lower()
-            matches = [t for t in result.get("tabs", [])
-                       if kw in (t.get("title", "") or "").lower()
-                       or kw in (t.get("url", "") or "").lower()]
+            matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
             if not matches:
                 return [TextContent(type="text", text=f"No tab found matching '{keyword}'")]
             tab_id = matches[0]["id"]
             if len(matches) > 1:
-                return [TextContent(type="text", text=f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
-                    f"  [{t['id']}] {t.get('title','')[:60]}"
-                    for t in matches))]
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n"
+                        + "\n".join(f"  [{t['id']}] {t.get('title', '')[:60]}" for t in matches),
+                    )
+                ]
         except Exception as e:
             return [TextContent(type="text", text=f"Error searching tabs: {e}")]
     body = json.dumps({"tabId": tab_id}).encode()
@@ -1466,6 +1599,7 @@ async def _handle_browser_switch_tab(arguments: dict) -> list[TextContent | Imag
         return [TextContent(type="text", text=f"Switch failed: {result.get('error', 'unknown')}")]
     except Exception as e:
         return [TextContent(type="text", text=f"Error switching tab: {e}")]
+
 
 async def _handle_browser_get_cookies(arguments: dict) -> list[TextContent | ImageContent]:
     result = _cdp("Network.getCookies")
@@ -1486,6 +1620,7 @@ async def _handle_browser_get_cookies(arguments: dict) -> list[TextContent | Ima
         expiry = ""
         if not c.get("session"):
             import datetime
+
             exp = c.get("expires", 0)
             if exp:
                 try:
@@ -1496,11 +1631,13 @@ async def _handle_browser_get_cookies(arguments: dict) -> list[TextContent | Ima
         lines.append(f"         Domain: {domain}{path}")
     return [TextContent(type="text", text="\n".join(lines))]
 
+
 async def _handle_browser_clear_cookies(arguments: dict) -> list[TextContent | ImageContent]:
     result = _cdp("Network.clearBrowserCookies")
     if "error" in result:
         return [TextContent(type="text", text=f"Error: {result['error']}")]
     return [TextContent(type="text", text="🧹 All cookies cleared.")]
+
 
 async def _handle_browser_get_downloads(arguments: dict) -> list[TextContent | ImageContent]:
     limit = min(arguments.get("limit", 20), 50)
@@ -1528,6 +1665,7 @@ async def _handle_browser_get_downloads(arguments: dict) -> list[TextContent | I
             lines.append(f"     Size: {total} bytes")
     return [TextContent(type="text", text="\n".join(lines))]
 
+
 async def _handle_browser_refresh(arguments: dict) -> list[TextContent | ImageContent]:
     hard = arguments.get("hard_reload", False)
     result = _cdp("Page.reload", {"ignoreCache": hard})
@@ -1536,13 +1674,15 @@ async def _handle_browser_refresh(arguments: dict) -> list[TextContent | ImageCo
         return [TextContent(type="text", text=f"Error: {result['error']}")]
     return [TextContent(type="text", text="🔄 Page reloaded" + (" (hard)" if hard else ""))]
 
+
 async def _handle_browser_forward(arguments: dict) -> list[TextContent | ImageContent]:
     _hermes_call("historyForward", fallback="window.history.forward()")
     _invalidate_cache()
     return [TextContent(type="text", text="Navigated forward")]
 
+
 async def _handle_browser_get_title(arguments: dict) -> list[TextContent | ImageContent]:
-    result = _hermes_call("docInfo", fallback='({ title: document.title, url: location.href })')
+    result = _hermes_call("docInfo", fallback="({ title: document.title, url: location.href })")
     value = _parse_result(result)
     if isinstance(value, dict):
         title = value.get("title", "?")
@@ -1550,11 +1690,15 @@ async def _handle_browser_get_title(arguments: dict) -> list[TextContent | Image
         return [TextContent(type="text", text=f"📄 {title}\n🌐 {url}")]
     return [TextContent(type="text", text=str(value)[:500])]
 
+
 async def _handle_browser_find(arguments: dict) -> list[TextContent | ImageContent]:
     query = arguments["query"]
     css_selector = arguments.get("selector", "")
     max_results = min(arguments.get("max_results", 20), 50)
-    result = _hermes_call("find", query, fallback=f"""
+    result = _hermes_call(
+        "find",
+        query,
+        fallback=f"""
     (() => {{
         const q = {_js_quote(query)}.toLowerCase();
         const scope = {_js_quote(css_selector)};
@@ -1580,7 +1724,8 @@ async def _handle_browser_find(arguments: dict) -> list[TextContent | ImageConte
         }}
         return {{ count: results.length, results }};
     }})()
-    """)
+    """,
+    )
     find_result = _parse_result(result)
     if isinstance(find_result, dict) and "error" in find_result:
         return [TextContent(type="text", text=f"Find error: {find_result['error']}")]
@@ -1591,8 +1736,9 @@ async def _handle_browser_find(arguments: dict) -> list[TextContent | ImageConte
     lines = [f"🔍 {count} element(s) matching '{query}':", ""]
     for it in items:
         vis = "" if it["visible"] else "⬆"
-        lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{it['text'][:70]}\" @({it['x']},{it['y']})")
+        lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{it["text"][:70]}" @({it["x"]},{it["y"]})')
     return [TextContent(type="text", text="\n".join(lines))]
+
 
 async def _handle_browser_block_patterns(arguments: dict) -> list[TextContent | ImageContent]:
     patterns = arguments.get("patterns", [])
@@ -1612,6 +1758,7 @@ async def _handle_browser_block_patterns(arguments: dict) -> list[TextContent | 
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
+
 async def _handle_browser_pdf(arguments: dict) -> list[TextContent | ImageContent]:
     landscape = arguments.get("landscape", False)
     scale = arguments.get("scale", 1.0)
@@ -1629,16 +1776,26 @@ async def _handle_browser_pdf(arguments: dict) -> list[TextContent | ImageConten
     data = result.get("result", {}).get("data", "")
     if data:
         pdf_bytes = base64.b64decode(data)
-        return [TextContent(type="text", text=json.dumps({
-            "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
-            "size": len(pdf_bytes),
-            "mime": "application/pdf",
-        }, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
+                        "size": len(pdf_bytes),
+                        "mime": "application/pdf",
+                    },
+                    indent=2,
+                ),
+            )
+        ]
     return [TextContent(type="text", text="No PDF data returned")]
+
 
 async def _handle_browser_wait_for_navigation(arguments: dict) -> list[TextContent | ImageContent]:
     import time as _time_module
     import asyncio as _asyncio
+
     tab_id = arguments.get("tab_id")
     timeout = min(arguments.get("timeout", 30), 120)
     deadline = _time_module.time() + timeout
@@ -1649,19 +1806,36 @@ async def _handle_browser_wait_for_navigation(arguments: dict) -> list[TextConte
         for e in events:
             if e.get("type") == "tab" and e.get("event") == "navigated":
                 if tab_id is None or e.get("tabId") == tab_id:
-                    return [TextContent(type="text", text=json.dumps({
-                        "navigated": True,
-                        "url": e.get("url", ""),
-                        "title": e.get("title", ""),
-                        "tabId": e.get("tabId"),
-                        "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
-                    }, indent=2))]
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "navigated": True,
+                                    "url": e.get("url", ""),
+                                    "title": e.get("title", ""),
+                                    "tabId": e.get("tabId"),
+                                    "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
+                                },
+                                indent=2,
+                            ),
+                        )
+                    ]
         await _asyncio.sleep(0.5)
-    return [TextContent(type="text", text=json.dumps({
-        "navigated": False,
-        "error": f"Navigation timeout after {timeout}s",
-        "elapsed": timeout,
-    }, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "navigated": False,
+                    "error": f"Navigation timeout after {timeout}s",
+                    "elapsed": timeout,
+                },
+                indent=2,
+            ),
+        )
+    ]
+
 
 async def _handle_browser_network_requests(arguments: dict) -> list[TextContent | ImageContent]:
     ev_filter = arguments.get("event", "")
@@ -1686,6 +1860,7 @@ async def _handle_browser_network_requests(arguments: dict) -> list[TextContent 
     if len(lines) <= 2:
         lines.append("  (no matching network requests found)")
     return [TextContent(type="text", text="\n".join(lines))]
+
 
 async def _handle_browser_response_body(arguments: dict) -> list[TextContent | ImageContent]:
     since = arguments.get("since", 0)
@@ -1719,6 +1894,7 @@ async def _handle_browser_response_body(arguments: dict) -> list[TextContent | I
         lines.append("  (no response bodies captured yet)")
     return [TextContent(type="text", text="\n".join(lines))]
 
+
 async def _handle_browser_set_cookie(arguments: dict) -> list[TextContent | ImageContent]:
     params = {
         "name": arguments["name"],
@@ -1741,11 +1917,20 @@ async def _handle_browser_set_cookie(arguments: dict) -> list[TextContent | Imag
         return [TextContent(type="text", text=f"Error: {result['error']}")]
     r = result.get("result", {})
     success = r.get("success", False)
-    return [TextContent(type="text", text=json.dumps({
-        "success": success,
-        "cookie": params.get("name"),
-        "domain": params.get("domain", params.get("url", "any")),
-    }, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "success": success,
+                    "cookie": params.get("name"),
+                    "domain": params.get("domain", params.get("url", "any")),
+                },
+                indent=2,
+            ),
+        )
+    ]
+
 
 async def _handle_browser_dismiss_dialog(arguments: dict) -> list[TextContent | ImageContent]:
     accept = arguments.get("accept", True)
@@ -1755,10 +1940,19 @@ async def _handle_browser_dismiss_dialog(arguments: dict) -> list[TextContent | 
     result = _cdp("Page.handleJavaScriptDialog", params)
     if "error" in result:
         return [TextContent(type="text", text=f"Error dismissing dialog: {result['error']}")]
-    return [TextContent(type="text", text=json.dumps({
-        "accepted": accept,
-        "success": True,
-    }, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "accepted": accept,
+                    "success": True,
+                },
+                indent=2,
+            ),
+        )
+    ]
+
 
 async def _handle_browser_upload_file(arguments: dict) -> list[TextContent | ImageContent]:
     selector = arguments["selector"]
@@ -1786,21 +1980,36 @@ async def _handle_browser_upload_file(arguments: dict) -> list[TextContent | Ima
     node_id = node_id_result.get("result", {}).get("nodeId")
     if not node_id:
         return [TextContent(type="text", text=f"Error: Could not find node for selector: {selector}")]
-    files_result = _cdp("DOM.setFileInputFiles", {
-        "nodeId": node_id,
-        "files": file_paths,
-    })
+    files_result = _cdp(
+        "DOM.setFileInputFiles",
+        {
+            "nodeId": node_id,
+            "files": file_paths,
+        },
+    )
     if "error" in files_result:
         return [TextContent(type="text", text=f"Error setting files: {files_result['error']}")]
-    return [TextContent(type="text", text=json.dumps({
-        "success": True,
-        "files": file_paths,
-        "selector": selector,
-    }, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "success": True,
+                    "files": file_paths,
+                    "selector": selector,
+                },
+                indent=2,
+            ),
+        )
+    ]
+
 
 async def _handle_browser_form_fill(arguments: dict) -> list[TextContent | ImageContent]:
     fields = arguments["fields"]
-    result = _hermes_call("formFill", fields, fallback=f"""
+    result = _hermes_call(
+        "formFill",
+        fields,
+        fallback=f"""
     (() => {{
         var fields = {json.dumps(fields)};
         var errors = [];
@@ -1871,13 +2080,15 @@ async def _handle_browser_form_fill(arguments: dict) -> list[TextContent | Image
         }}
         return {{completed: completed, errors: errors}};
     }})()
-    """)
+    """,
+    )
     value = _parse_result(result)
     if isinstance(value, dict) and "error" in value:
         return [TextContent(type="text", text=f"Error: {value['error']}")]
     if isinstance(value, dict):
         return [TextContent(type="text", text=json.dumps(value, indent=2))]
     return [TextContent(type="text", text=str(value))]
+
 
 async def _handle_browser_create_tab(arguments: dict) -> list[TextContent | ImageContent]:
     url = arguments.get("url", "about:blank")
@@ -1895,6 +2106,7 @@ async def _handle_browser_create_tab(arguments: dict) -> list[TextContent | Imag
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
+
 async def _handle_browser_close_tab(arguments: dict) -> list[TextContent | ImageContent]:
     tab_id = arguments["tab_id"]
     try:
@@ -1909,6 +2121,7 @@ async def _handle_browser_close_tab(arguments: dict) -> list[TextContent | Image
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
+
 
 async def _handle_browser_do(arguments: dict) -> list[TextContent | ImageContent]:
     """Execute multiple browser actions sequentially in ONE tool call.
@@ -1925,7 +2138,7 @@ async def _handle_browser_do(arguments: dict) -> list[TextContent | ImageContent
             if act == "navigate":
                 r = _cdp("Page.navigate", {"url": action["url"]})
                 _invalidate_cache()
-                results.append(f"[{i+1}] Navigated to {action.get('url', '?')}")
+                results.append(f"[{i + 1}] Navigated to {action.get('url', '?')}")
             elif act == "navigate_wait":
                 url = action["url"]
                 to = min(action.get("timeout", 15), 60)
@@ -1933,6 +2146,7 @@ async def _handle_browser_do(arguments: dict) -> list[TextContent | ImageContent
                 _invalidate_cache()
                 import asyncio as _nwt_asyncio
                 import time as _nwt_tm
+
                 deadline = _nwt_tm.time() + to
                 title = "?"
                 while _nwt_tm.time() < deadline:
@@ -1944,115 +2158,129 @@ async def _handle_browser_do(arguments: dict) -> list[TextContent | ImageContent
                     await _nwt_asyncio.sleep(0.3)
                 wait_for = action.get("wait_for")
                 if wait_for:
-                    ws_r = _hermes_call("waitSelector", wait_for, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(wait_for)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(wait_for)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                    ws_r = _hermes_call(
+                        "waitSelector",
+                        wait_for,
+                        to,
+                        "visible",
+                        fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(wait_for)}, {to})) || (() => {{ const d=Date.now()+{to * 1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(wait_for)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()",
+                    )
                     ws_v = _parse_result(ws_r)
                     if isinstance(ws_v, dict) and ws_v.get("ok"):
-                        results.append(f"[{i+1}] Navigate-wait: '{title}' loaded, '{wait_for}' visible")
+                        results.append(f"[{i + 1}] Navigate-wait: '{title}' loaded, '{wait_for}' visible")
                     else:
-                        results.append(f"[{i+1}] Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
+                        results.append(f"[{i + 1}] Navigate-wait: '{title}' loaded, waited for '{wait_for}' (timeout)")
                 else:
-                    results.append(f"[{i+1}] Navigate-wait: '{title}' loaded")
+                    results.append(f"[{i + 1}] Navigate-wait: '{title}' loaded")
             elif act == "wait_selector":
                 sel = action["selector"]
                 to = min(action.get("timeout", 10), 60)
-                ws_r = _hermes_call("waitSelector", sel, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                ws_r = _hermes_call(
+                    "waitSelector",
+                    sel,
+                    to,
+                    "visible",
+                    fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({_js_quote(sel)}, {to})) || (() => {{ const d=Date.now()+{to * 1000}; while(Date.now()<d){{ const e=document.querySelector({_js_quote(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()",
+                )
                 r = _parse_result(ws_r)
                 if isinstance(r, dict) and r.get("ok"):
-                    results.append(f"[{i+1}] Wait: '{sel}' visible")
+                    results.append(f"[{i + 1}] Wait: '{sel}' visible")
                 else:
-                    results.append(f"[{i+1}] Wait timed out: '{sel}'")
+                    results.append(f"[{i + 1}] Wait timed out: '{sel}'")
             elif act == "click":
                 sel = action["selector"]
                 click_result = _hermes_call("click", sel)
                 v = _parse_result(click_result)
                 if isinstance(v, dict) and v.get("ok"):
-                    results.append(f"[{i+1}] Clicked '{sel}'")
+                    results.append(f"[{i + 1}] Clicked '{sel}'")
                 else:
-                    results.append(f"[{i+1}] Click failed: {v}")
+                    results.append(f"[{i + 1}] Click failed: {v}")
             elif act == "type":
                 sel = action["selector"]
                 txt = action["text"]
                 _hermes_call("type", sel, txt)
-                results.append(f"[{i+1}] Typed into '{sel}'")
+                results.append(f"[{i + 1}] Typed into '{sel}'")
             elif act == "enter":
                 _hermes_call("key", "Enter")
-                results.append(f"[{i+1}] Pressed Enter")
+                results.append(f"[{i + 1}] Pressed Enter")
             elif act == "hover":
                 sel = action["selector"]
                 hv_r = _hermes_call("hover", sel)
                 hv_v = _parse_result(hv_r)
                 if isinstance(hv_v, dict) and hv_v.get("ok"):
-                    results.append(f"[{i+1}] Hovered '{sel}'")
+                    results.append(f"[{i + 1}] Hovered '{sel}'")
                 else:
-                    results.append(f"[{i+1}] Hover failed: {hv_v}")
+                    results.append(f"[{i + 1}] Hover failed: {hv_v}")
             elif act == "click_text":
                 text_query = action["text"]
                 tag_filter = action.get("tag", "")
                 ct_r = _hermes_call("clickText", text_query, tag_filter)
                 ct_v = _parse_result(ct_r)
                 if isinstance(ct_v, dict) and "error" not in ct_v:
-                    results.append(f"[{i+1}] Clicked text '{text_query}'")
+                    results.append(f"[{i + 1}] Clicked text '{text_query}'")
                 else:
-                    results.append(f"[{i+1}] Click-text failed: {ct_v}")
+                    results.append(f"[{i + 1}] Click-text failed: {ct_v}")
             elif act == "key":
                 k = action.get("key", "Escape")
                 _hermes_call("key", k)
-                results.append(f"[{i+1}] Pressed {k}")
+                results.append(f"[{i + 1}] Pressed {k}")
             elif act == "screenshot":
                 shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
                 if "error" not in shot:
-                    results.append(f"[{i+1}] Screenshot captured")
+                    results.append(f"[{i + 1}] Screenshot captured")
                 else:
-                    results.append(f"[{i+1}] Screenshot failed")
+                    results.append(f"[{i + 1}] Screenshot failed")
             elif act == "fill_by_label":
                 lbl = action["label"]
                 txt = action["text"]
                 fl_r = _hermes_call("fillByLabel", lbl, txt)
                 fl_v = _parse_result(fl_r)
                 if isinstance(fl_v, dict) and "error" not in fl_v:
-                    results.append(f"[{i+1}] Filled '{lbl}'")
+                    results.append(f"[{i + 1}] Filled '{lbl}'")
                 else:
-                    results.append(f"[{i+1}] Fill failed: {fl_v}")
+                    results.append(f"[{i + 1}] Fill failed: {fl_v}")
             elif act == "scroll":
                 d = action.get("direction", "down")
                 a = action.get("amount", 0)
                 _hermes_call("scrollBy", d, a)
-                results.append(f"[{i+1}] Scrolled {d}")
+                results.append(f"[{i + 1}] Scrolled {d}")
             elif act == "back":
                 _hermes_call("historyBack", fallback="window.history.back()")
                 _invalidate_cache()
-                results.append(f"[{i+1}] Navigated back")
+                results.append(f"[{i + 1}] Navigated back")
             elif act == "forward":
                 _hermes_call("historyForward", fallback="window.history.forward()")
                 _invalidate_cache()
-                results.append(f"[{i+1}] Navigated forward")
+                results.append(f"[{i + 1}] Navigated forward")
             elif act == "eval":
                 expr = action["expression"]
                 r = _parse_result(_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True}))
-                results.append(f"[{i+1}] eval: {str(r)[:200]}")
+                results.append(f"[{i + 1}] eval: {str(r)[:200]}")
             elif act == "snapshot":
                 full = action.get("full", False)
                 sn_r = _hermes_call("snapshot", full)
                 sn_v = _parse_result(sn_r)
                 if isinstance(sn_v, dict):
                     info = sn_v.get("info", {})
-                    results.append(f"[{i+1}] Snapshot: {info.get('visible',0)}/{info.get('total',0)} elements on {info.get('title','?')}")
+                    results.append(f"[{i + 1}] Snapshot: {info.get('visible', 0)}/{info.get('total', 0)} elements on {info.get('title', '?')}")
                 else:
-                    results.append(f"[{i+1}] Snapshot error")
+                    results.append(f"[{i + 1}] Snapshot error")
             elif act == "get_text":
                 gt_r = _hermes_call("getText", fallback="document.body ? document.body.innerText.substring(0,10000) : ''")
                 txt = str(_parse_result(gt_r))[:300]
-                results.append(f"[{i+1}] Text: {txt}")
+                results.append(f"[{i + 1}] Text: {txt}")
             elif act == "wait":
                 import asyncio
+
                 await asyncio.sleep(min(action.get("seconds", 1), 10))
-                results.append(f"[{i+1}] Waited {action.get('seconds', 1)}s")
+                results.append(f"[{i + 1}] Waited {action.get('seconds', 1)}s")
             else:
-                results.append(f"[{i+1}] Unknown action: {act}")
+                results.append(f"[{i + 1}] Unknown action: {act}")
         except Exception as e:
-            results.append(f"[{i+1}] Error in '{act}': {e}")
+            results.append(f"[{i + 1}] Error in '{act}': {e}")
     summary = "\n".join(results)
     return [TextContent(type="text", text=f"✅ browser_do completed {len(actions)} actions:\n{summary}")]
+
 
 async def _handle_browser_navigate_wait(arguments: dict) -> list[TextContent | ImageContent]:
     """Navigate to a URL and wait until the page is ready.
@@ -2065,6 +2293,7 @@ async def _handle_browser_navigate_wait(arguments: dict) -> list[TextContent | I
         return [TextContent(type="text", text=f"Error: {nav_result['error']}")]
     import asyncio as _asyncio
     import time as _t
+
     deadline = _t.time() + timeout
     while _t.time() < deadline:
         ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
@@ -2082,20 +2311,24 @@ async def _handle_browser_navigate_wait(arguments: dict) -> list[TextContent | I
                 if isinstance(snap_data, dict) and "error" not in snap_data:
                     info = snap_data.get("info", {})
                     items = snap_data.get("items", [])
-                    lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')}  —  {info.get('visible','?')} visible of {info.get('total','?')} interactive elements")
+                    lines.append(
+                        f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')}  —  {info.get('visible', '?')} visible of {info.get('total', '?')} interactive elements"
+                    )
                     lines.append("")
                     for it in items[:60]:
                         vis = "" if it["visible"] else "⬆"
                         label = it["text"] or it["placeholder"] or it.get("aria_label", "") or it["name"] or it["href"] or it["role"]
-                        lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+                        lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
                     if len(items) > 60:
                         lines.append(f"  ... and {len(items) - 60} more")
                 return [TextContent(type="text", text="\n".join(lines))]
         await _asyncio.sleep(0.3)
     return [TextContent(type="text", text=f"⏱️ Page did not finish loading within {timeout}s: {url}")]
 
+
 async def _handle_unknown(name: str) -> list[TextContent]:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
 
 # ---------------------------------------------------------------------------
 # Tool dispatch — replaces 1290-line if/elif chain
@@ -2162,15 +2395,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
     except Exception as e:
         return [TextContent(type="text", text=f"Error in {name}: {e}")]
 
+
 def main():
     import asyncio
+
     start_watchdog()
+
     async def run():
         async with stdio_server() as (read_stream, write_stream):
             await app.run(read_stream, write_stream, app.create_initialization_options())
+
     asyncio.run(run())
 
 
 if __name__ == "__main__":
     main()
-

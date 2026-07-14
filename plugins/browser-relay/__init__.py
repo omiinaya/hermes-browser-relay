@@ -30,6 +30,7 @@ from shared import (  # noqa: E402
     get_cached_snapshot,
     invalidate_cache,
 )
+
 # Keep backward-compatible aliases for existing code
 _js_quote = js_quote
 _parse_result = parse_result
@@ -52,6 +53,7 @@ TOOL_TIMEOUT = 60
 # Tab targeting — set before CDP calls to route to a specific tab attachment
 _shared_tab_id: int | None = None
 
+
 def _set_tab(arguments: dict | None) -> None:
     """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
     global _shared_tab_id
@@ -60,19 +62,17 @@ def _set_tab(arguments: dict | None) -> None:
 
 def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
     """Call __hermes.<func_name>(args) via content script fast path.
-    
+
     Attempts content script routing first (no CDP overhead). Falls back to
     Runtime.evaluate if content script is unavailable (e.g. page just navigated)."""
-    result = _cdp("__hermes", {}, _hermes=True,
-                  _hermesFunc=func_name, _hermesArgs=list(args))
+    result = _cdp("__hermes", {}, _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
     error = result.get("error", {})
     if isinstance(error, dict) and error.get("_fallback"):
         time.sleep(0.08)
-        result = _cdp("__hermes", {}, _hermes=True,
-                      _hermesFunc=func_name, _hermesArgs=list(args))
+        result = _cdp("__hermes", {}, _hermes=True, _hermesFunc=func_name, _hermesArgs=list(args))
         error = result.get("error", {})
         if isinstance(error, dict) and error.get("_fallback"):
-            js_args = ', '.join(json.dumps(a) for a in args)
+            js_args = ", ".join(json.dumps(a) for a in args)
             if fallback:
                 full_js = f"(typeof __hermes !== 'undefined' && __hermes.{func_name}({js_args})) || ({fallback})"
             else:
@@ -411,7 +411,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_block_patterns",
-        "description": "Block or allow URL patterns matching specified strings. Uses Chrome's declarativeNetRequest API. Pass patterns=[\"*.css\",\"*analytics*\"] to block, or patterns=[] to clear.",
+        "description": 'Block or allow URL patterns matching specified strings. Uses Chrome\'s declarativeNetRequest API. Pass patterns=["*.css","*analytics*"] to block, or patterns=[] to clear.',
         "parameters": {
             "type": "object",
             "properties": {
@@ -491,8 +491,15 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "event": {"type": "string", "description": "Filter by event type: 'completed', 'error', 'beforeRequest', 'beforeSendHeaders', 'headersReceived' (optional — returns all types)"},
-                "since": {"type": "number", "description": "Only include events after this timestamp (epoch ms). Use the _received field from a prior call for polling", "default": 0},
+                "event": {
+                    "type": "string",
+                    "description": "Filter by event type: 'completed', 'error', 'beforeRequest', 'beforeSendHeaders', 'headersReceived' (optional — returns all types)",
+                },
+                "since": {
+                    "type": "number",
+                    "description": "Only include events after this timestamp (epoch ms). Use the _received field from a prior call for polling",
+                    "default": 0,
+                },
                 "limit": {"type": "integer", "description": "Max events to return (default: 20, max: 100)", "default": 20},
             },
         },
@@ -559,7 +566,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "fields": {
                     "type": "object",
-                    "description": "Dict of field identifier (label/placeholder/name) to value. E.g. {\"Email\": \"user@example.com\", \"Password\": \"secret123\", \"input[name=remember]\": \"true\"}",
+                    "description": 'Dict of field identifier (label/placeholder/name) to value. E.g. {"Email": "user@example.com", "Password": "secret123", "input[name=remember]": "true"}',
                     "additionalProperties": {"type": "string"},
                 },
             },
@@ -633,6 +640,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
     def is_available(self) -> bool:
         """Check if CDP relay is reachable (lightweight)."""
         import socket
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
@@ -673,14 +681,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             return json.dumps(result.get("result", {}), indent=2)
 
         elif name == "browser_eval":
-            result = _cdp("Runtime.evaluate", {
-                "expression": args["expression"], "returnByValue": True
-            })
+            result = _cdp("Runtime.evaluate", {"expression": args["expression"], "returnByValue": True})
             return str(_parse_result(result))
 
         elif name == "browser_hover":
             selector = args["selector"]
-            result = _hermes_call("hover", selector, fallback=f"""
+            result = _hermes_call(
+                "hover",
+                selector,
+                fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
@@ -690,7 +699,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 el.dispatchEvent(new MouseEvent('mousemove', {{ bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 }}));
                 return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
@@ -698,7 +708,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_click":
             selector = args["selector"]
-            result = _hermes_call("click", selector, fallback=f"""
+            result = _hermes_call(
+                "click",
+                selector,
+                fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
@@ -709,7 +722,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: cx, clientY: cy }}));
                 return {{ ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent||'').trim().substring(0, 80) }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
@@ -718,7 +732,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_type":
             selector = args["selector"]
             text = args["text"]
-            result = _hermes_call("type", selector, text, fallback=f"""
+            result = _hermes_call(
+                "type",
+                selector,
+                text,
+                fallback=f"""
             (() => {{
                 const el = document.querySelector({json.dumps(selector)});
                 if (!el) return {{ error: 'Element not found: ' + {json.dumps(selector)} }};
@@ -730,7 +748,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: el.tagName, value_len: el.value.length }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
@@ -748,8 +767,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return json.dumps({"error": result["error"]})
             data = result.get("result", {}).get("data", "")
             if data:
-                return json.dumps({"base64_png": data[:100] + "..." if len(data) > 100 else data,
-                                   "size": len(data)})
+                return json.dumps({"base64_png": data[:100] + "..." if len(data) > 100 else data, "size": len(data)})
             return "No screenshot data"
 
         elif name == "browser_status":
@@ -770,7 +788,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             if cached is not None:
                 snap = cached
             else:
-                result = _hermes_call("snapshot", full, fallback=f"""
+                result = _hermes_call(
+                    "snapshot",
+                    full,
+                    fallback=f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
                 const _shadowQueryAll = (root, sel) => {{
@@ -811,7 +832,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }}
                 return {{ info, items, textContent }};
             }})()
-            """)
+            """,
+                )
                 snap = _parse_result(result)
                 if isinstance(snap, dict) and "error" in snap:
                     return f"Snapshot error: {snap['error']}"
@@ -821,13 +843,13 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             lines = [
                 f"📄 {info.get('title', '?')}",
                 f"🌐 {info.get('url', '?')}",
-                f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')} — {info.get('visible','?')} visible of {info.get('total','?')} elements",
+                f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements",
                 "",
             ]
             for it in items[:60]:
                 vis = "⬆ " if not it["visible"] else ""
                 label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it["tag"]
-                lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+                lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
             if len(items) > 60:
                 lines.append(f"  ... and {len(items) - 60} more")
             if full:
@@ -838,7 +860,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_scroll":
             direction = args.get("direction", "down")
             amount = args.get("amount", 0)
-            result = _hermes_call("scrollBy", direction, amount, fallback=f"""
+            result = _hermes_call(
+                "scrollBy",
+                direction,
+                amount,
+                fallback=f"""
             (() => {{
                 const dir = {json.dumps(direction)};
                 let amt = {amount or 0};
@@ -848,14 +874,20 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
                 return {{ ok: true, direction: dir, amount: amt }};
             }})()
-            """)
+            """,
+            )
             return f"Scrolled {direction} by {abs(amount or 400)}px"
 
         elif name == "browser_wait_selector":
             selector = args["selector"]
             timeout = min(args.get("timeout", 15), 60)
             state = args.get("state", "visible")
-            result = _hermes_call("waitSelector", selector, timeout, state, fallback=f"""
+            result = _hermes_call(
+                "waitSelector",
+                selector,
+                timeout,
+                state,
+                fallback=f"""
             (() => {{
                 const deadline = Date.now() + {timeout * 1000};
                 while (Date.now() < deadline) {{
@@ -867,7 +899,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }}
                 return {{ error: 'Timeout' }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and value.get("ok"):
                 return f"Selector '{selector}' matched"
@@ -876,7 +909,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_click_text":
             text_query = args["text"]
             tag_filter = args.get("tag", "")
-            result = _hermes_call("clickText", text_query, tag_filter, fallback=f"""
+            result = _hermes_call(
+                "clickText",
+                text_query,
+                tag_filter,
+                fallback=f"""
             (() => {{
                 const q = {json.dumps(text_query)}.toLowerCase();
                 const tag = {json.dumps(tag_filter)};
@@ -903,16 +940,21 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }}
                 return {{ error: 'No element found with text: ' + q }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
-            return f"Clicked '{value.get('text','?')}' ({value.get('tag','?')}) by text"
+            return f"Clicked '{value.get('text', '?')}' ({value.get('tag', '?')}) by text"
 
         elif name == "browser_fill_by_label":
             label = args["label"]
             text = args["text"]
-            result = _hermes_call("fillByLabel", label, text, fallback=f"""
+            result = _hermes_call(
+                "fillByLabel",
+                label,
+                text,
+                fallback=f"""
             (() => {{
                 const search = {json.dumps(label)}.toLowerCase();
                 const _shadowQueryAll = (root, sel) => {{
@@ -951,7 +993,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return {{ ok: true, tag: input.tagName, type: input.type || '' }};
             }})()
-            """)
+            """,
+            )
             fill_result = _parse_result(result)
             if isinstance(fill_result, dict) and "error" in fill_result:
                 return f"Error: {fill_result['error']}"
@@ -974,13 +1017,13 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 for e in events:
                     etype = e.get("type", "?")
                     if etype == "tab":
-                        lines.append(f"  🏁 NAV: {e.get('url','')[:120]}")
+                        lines.append(f"  🏁 NAV: {e.get('url', '')[:120]}")
                     elif etype == "download":
-                        lines.append(f"  📥 DOWNLOAD: {e.get('filename',e.get('url',''))[:120]}")
-                    elif etype == "webrequest" and e.get("event") in ("completed","error"):
-                        lines.append(f"  🌐 {e['event']}: {e.get('method','?')} {e.get('statusCode','?')} {e.get('url','')[:100]}")
+                        lines.append(f"  📥 DOWNLOAD: {e.get('filename', e.get('url', ''))[:120]}")
+                    elif etype == "webrequest" and e.get("event") in ("completed", "error"):
+                        lines.append(f"  🌐 {e['event']}: {e.get('method', '?')} {e.get('statusCode', '?')} {e.get('url', '')[:100]}")
                     elif etype == "response_body":
-                        lines.append(f"  📄 BODY: {e.get('url','')[:100]}")
+                        lines.append(f"  📄 BODY: {e.get('url', '')[:100]}")
                 if len(lines) <= 2:
                     lines.append("  (no events yet)")
                 return "\n".join(lines)
@@ -1074,9 +1117,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         result = json.loads(resp.read().decode())
                     kw = keyword.lower()
-                    matches = [t for t in result.get("tabs", [])
-                               if kw in (t.get("title", "") or "").lower()
-                               or kw in (t.get("url", "") or "").lower()]
+                    matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
                     if not matches:
                         return f"No tab found matching '{keyword}'"
                     tab_id = matches[0]["id"]
@@ -1140,15 +1181,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     if "error" in result:
                         return json.dumps({"error": result["error"]})
                     kw = keyword.lower()
-                    matches = [t for t in result.get("tabs", [])
-                               if kw in (t.get("title", "") or "").lower()
-                               or kw in (t.get("url", "") or "").lower()]
+                    matches = [t for t in result.get("tabs", []) if kw in (t.get("title", "") or "").lower() or kw in (t.get("url", "") or "").lower()]
                     if not matches:
                         return f"No tab found matching '{keyword}'"
                     tab_id = matches[0]["id"]
                     if len(matches) > 1:
                         return f"Multiple tabs match '{keyword}'. Use browser_list_tabs and specify tab_id:\n" + "\n".join(
-                            f"  [{t['id']}] {t.get('title','')[:60]}" for t in matches)
+                            f"  [{t['id']}] {t.get('title', '')[:60]}" for t in matches
+                        )
                 except Exception as e:
                     return json.dumps({"error": f"Error searching tabs: {e}"})
 
@@ -1183,6 +1223,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 expiry = ""
                 if not c.get("session"):
                     import datetime
+
                     exp = c.get("expires", 0)
                     if exp:
                         try:
@@ -1242,7 +1283,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             return "Navigated forward"
 
         elif name == "browser_get_title":
-            result = _hermes_call("docInfo", fallback='({ title: document.title, url: location.href })')
+            result = _hermes_call("docInfo", fallback="({ title: document.title, url: location.href })")
             value = _parse_result(result)
             if isinstance(value, dict):
                 return f"📄 {value.get('title', '?')}\n🌐 {value.get('url', '?')}"
@@ -1250,7 +1291,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_find":
             query = args["query"]
-            result = _hermes_call("find", query, fallback=f"""
+            result = _hermes_call(
+                "find",
+                query,
+                fallback=f"""
             (() => {{
                 const q = {json.dumps(query)}.toLowerCase();
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
@@ -1278,7 +1322,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }});
                 return {{ count: results.length, results: results }};
             }})()
-            """)
+            """,
+            )
             find_result = _parse_result(result)
             if isinstance(find_result, dict) and "error" in find_result:
                 return json.dumps({"error": find_result["error"]})
@@ -1289,7 +1334,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             lines = [f"🔍 {count} element(s) matching '{query}':", ""]
             for it in items:
                 vis = "" if it["visible"] else "⬆"
-                lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{it['text'][:70]}\" @({it['x']},{it['y']})")
+                lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{it["text"][:70]}" @({it["x"]},{it["y"]})')
             return "\n".join(lines)
 
         elif name == "browser_block_patterns":
@@ -1313,7 +1358,11 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         elif name == "browser_select_option":
             selector = args["selector"]
             text = args["text"]
-            result = _hermes_call("selectOption", selector, text, fallback=f"""
+            result = _hermes_call(
+                "selectOption",
+                selector,
+                text,
+                fallback=f"""
             (() => {{
                 const select = document.querySelector({json.dumps(selector)});
                 if (!select) return {{ error: 'Select element not found: ' + {json.dumps(selector)} }};
@@ -1327,7 +1376,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 select.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 return {{ ok: true, selected: target.text, value: target.value, index: target.index }};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return f"Error: {value['error']}"
@@ -1335,7 +1385,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_screenshot_annotated":
             # Get interactive elements via __hermes.snapshot (avoids inline JS through CDP)
-            annotate_result = _hermes_call("snapshot", False, fallback=f"""
+            annotate_result = _hermes_call(
+                "snapshot",
+                False,
+                fallback=f"""
             (() => {{
                 const selectors = {json.dumps(["a[href]", "button", "input:not([type=hidden])", "select", "textarea", "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]", "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"])};
                 const _shadowQueryAll = (root, sel) => {{
@@ -1363,17 +1416,19 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }});
                 return {{ info: {{ total: items.length, visible: items.filter(i => i.visible).length }}, items: items }};
             }})()
-            """)
+            """,
+            )
             snap = _parse_result(annotate_result)
             all_items = snap.get("items", [])
             annotations = [it for it in all_items if it.get("visible") and it.get("x")][:50]
             shot = _cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
             data = shot.get("result", {}).get("data", "")
             lines = ["📸 Annotated screenshot — interactive elements:", ""]
-            for a in (annotations if isinstance(annotations, list) else []):
-                lines.append(f"  [{a['ref']}] \"{a['text'][:50]}\" @({a['x']},{a['y']})")
+            for a in annotations if isinstance(annotations, list) else []:
+                lines.append(f'  [{a["ref"]}] "{a["text"][:50]}" @({a["x"]},{a["y"]})')
             if data:
                 import os
+
                 img_dir = os.path.expanduser("~/.hermes/image_cache")
                 os.makedirs(img_dir, exist_ok=True)
                 img_path = os.path.join(img_dir, f"annotated_{int(__import__('time').time())}.png")
@@ -1399,15 +1454,19 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             data = result.get("result", {}).get("data", "")
             if data:
                 pdf_bytes = base64.b64decode(data)
-                return json.dumps({
-                    "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
-                    "size": len(pdf_bytes),
-                    "mime": "application/pdf",
-                }, indent=2)
+                return json.dumps(
+                    {
+                        "base64_pdf": data[:100] + "..." if len(data) > 100 else data,
+                        "size": len(pdf_bytes),
+                        "mime": "application/pdf",
+                    },
+                    indent=2,
+                )
             return "No PDF data returned"
 
         elif name == "browser_wait_for_navigation":
             import time as _time_module
+
             tab_id = args.get("tab_id")
             timeout = min(args.get("timeout", 30), 120)
             deadline = _time_module.time() + timeout
@@ -1421,21 +1480,27 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     for e in events:
                         if e.get("type") == "tab" and e.get("event") == "navigated":
                             if tab_id is None or e.get("tabId") == tab_id:
-                                return json.dumps({
-                                    "navigated": True,
-                                    "url": e.get("url", ""),
-                                    "title": e.get("title", ""),
-                                    "tabId": e.get("tabId"),
-                                    "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
-                                }, indent=2)
+                                return json.dumps(
+                                    {
+                                        "navigated": True,
+                                        "url": e.get("url", ""),
+                                        "title": e.get("title", ""),
+                                        "tabId": e.get("tabId"),
+                                        "elapsed": round((_time_module.time() * 1000 - start_ts) / 1000, 2),
+                                    },
+                                    indent=2,
+                                )
                 except Exception:
                     pass
                 _time_module.sleep(0.5)
-            return json.dumps({
-                "navigated": False,
-                "error": f"Navigation timeout after {timeout}s",
-                "elapsed": timeout,
-            }, indent=2)
+            return json.dumps(
+                {
+                    "navigated": False,
+                    "error": f"Navigation timeout after {timeout}s",
+                    "elapsed": timeout,
+                },
+                indent=2,
+            )
 
         elif name == "browser_network_requests":
             ev_filter = args.get("event", "")
@@ -1521,11 +1586,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 return json.dumps({"error": result["error"]})
             r = result.get("result", {})
             success = r.get("success", False)
-            return json.dumps({
-                "success": success,
-                "cookie": params.get("name"),
-                "domain": params.get("domain", params.get("url", "any")),
-            }, indent=2)
+            return json.dumps(
+                {
+                    "success": success,
+                    "cookie": params.get("name"),
+                    "domain": params.get("domain", params.get("url", "any")),
+                },
+                indent=2,
+            )
 
         elif name == "browser_upload_file":
             selector = args["selector"]
@@ -1572,7 +1640,10 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
 
         elif name == "browser_form_fill":
             fields = args["fields"]
-            result = _hermes_call("formFill", fields, fallback=f"""
+            result = _hermes_call(
+                "formFill",
+                fields,
+                fallback=f"""
             (() => {{
                 var fields = {json.dumps(fields)};
                 var errors = [];
@@ -1640,7 +1711,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                 }}
                 return {{completed: completed, errors: errors}};
             }})()
-            """)
+            """,
+            )
             value = _parse_result(result)
             if isinstance(value, dict) and "error" in value:
                 return json.dumps(value, indent=2)
@@ -1695,6 +1767,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         to = min(act.get("timeout", 15), 60)
                         _cdp("Page.navigate", {"url": url})
                         import time as _nwt
+
                         deadline = _nwt.time() + to
                         title = "?"
                         while _nwt.time() < deadline:
@@ -1716,7 +1789,13 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     elif action == "wait_selector":
                         sel = act["selector"]
                         to = min(act.get("timeout", 10), 60)
-                        ws_r = _hermes_call("waitSelector", sel, to, "visible", fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to*1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()")
+                        ws_r = _hermes_call(
+                            "waitSelector",
+                            sel,
+                            to,
+                            "visible",
+                            fallback=f"(typeof __hermes !== 'undefined' && __hermes.waitSelector({json.dumps(sel)}, {to})) || (() => {{ const d=Date.now()+{to * 1000}; while(Date.now()<d){{ const e=document.querySelector({json.dumps(sel)}); if(e&&e.offsetWidth>0) return {{ok:true}}; }} return {{error:'timeout'}}; }})()",
+                        )
                         r = _parse_result(ws_r)
                         results.append(f"Wait: '{sel}' {'visible' if isinstance(r, dict) and r.get('ok') else 'timeout'}")
                     elif action == "click":
@@ -1779,7 +1858,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         sn_v = _parse_result(sn_r)
                         if isinstance(sn_v, dict):
                             info = sn_v.get("info", {})
-                            results.append(f"Snapshot: {info.get('visible',0)}/{info.get('total',0)} elements")
+                            results.append(f"Snapshot: {info.get('visible', 0)}/{info.get('total', 0)} elements")
                         else:
                             results.append("Snapshot error")
                     elif action == "get_text":
@@ -1788,6 +1867,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         results.append(f"Text: {txt}")
                     elif action == "wait":
                         import time
+
                         time.sleep(min(act.get("seconds", 1), 10))
                         results.append(f"Waited {act.get('seconds', 1)}s")
                     else:
@@ -1804,6 +1884,7 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
             if "error" in nav_result:
                 return json.dumps({"error": nav_result["error"]})
             import time as _t
+
             deadline = _t.time() + timeout
             while _t.time() < deadline:
                 ready = _parse_result(_hermes_call("readyState", fallback="({ readyState: document.readyState, title: document.title })"))
@@ -1818,12 +1899,14 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                     if isinstance(snap_data, dict) and "error" not in snap_data:
                         info = snap_data.get("info", {})
                         items = snap_data.get("items", [])
-                        lines.append(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')} — {info.get('visible','?')} visible of {info.get('total','?')} elements")
+                        lines.append(
+                            f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements"
+                        )
                         lines.append("")
                         for it in items[:60]:
                             vis = "" if it["visible"] else "⬆"
                             label = it["text"] or it.get("placeholder", "") or it.get("aria_label", "") or it.get("name", "") or it.get("href", "") or it["tag"]
-                            lines.append(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+                            lines.append(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
                         if len(items) > 50:
                             lines.append(f"  ... and {len(items) - 50} more")
                     return "\n".join(lines)

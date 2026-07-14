@@ -38,9 +38,9 @@ logging.basicConfig(
 log = logging.getLogger("cdp-relay")
 
 # Heartbeat configuration
-HEARTBEAT_INTERVAL = 15       # Send ping every 15s
-HEARTBEAT_TIMEOUT = 45        # Consider disconnected after 45s of silence
-STALE_REQUEST_TIMEOUT = 120   # Auto-cancel pending requests older than 120s
+HEARTBEAT_INTERVAL = 15  # Send ping every 15s
+HEARTBEAT_TIMEOUT = 45  # Consider disconnected after 45s of silence
+STALE_REQUEST_TIMEOUT = 120  # Auto-cancel pending requests older than 120s
 
 # Event capture
 CAPTURE_DIR = Path("/tmp/hermes-captures")
@@ -90,9 +90,7 @@ async def heartbeat_loop():
         # Check if we've heard anything within the timeout window
         elapsed = _now() - last_message_time
         if elapsed > HEARTBEAT_TIMEOUT:
-            log.warning(
-                f"No message from extension in {elapsed:.0f}s (> {HEARTBEAT_TIMEOUT}s) — closing"
-            )
+            log.warning(f"No message from extension in {elapsed:.0f}s (> {HEARTBEAT_TIMEOUT}s) — closing")
             try:
                 await ws.close()
             except Exception:
@@ -104,17 +102,11 @@ async def stale_request_sweep():
     while True:
         await asyncio.sleep(30)  # Check every 30s
         now = _now()
-        stale_ids = [
-            cdp_id
-            for cdp_id, entry in list(pending_requests.items())
-            if now - entry["created_at"] > STALE_REQUEST_TIMEOUT
-        ]
+        stale_ids = [cdp_id for cdp_id, entry in list(pending_requests.items()) if now - entry["created_at"] > STALE_REQUEST_TIMEOUT]
         for cdp_id in stale_ids:
             entry = pending_requests.pop(cdp_id, None)
             if entry and not entry["future"].done():
-                entry["future"].set_exception(
-                    Exception(f"Request {cdp_id} timed out after {STALE_REQUEST_TIMEOUT}s")
-                )
+                entry["future"].set_exception(Exception(f"Request {cdp_id} timed out after {STALE_REQUEST_TIMEOUT}s"))
                 log.warning(f"Swept stale pending request {cdp_id} ({STALE_REQUEST_TIMEOUT}s)")
 
 
@@ -310,11 +302,11 @@ async def _process_cdp_command(body):
 
 async def handle_mcp_connection(request):
     """WebSocket handler for MCP server connection (persistent command channel).
-    
+
     The MCP server connects via WS (ws://host:9223/mcp-ws) and sends CDP commands
     as JSON messages. Each message is processed via _execute_cdp_raw (same logic as
     HTTP POST /cdp) and the response is sent back over the same WS connection.
-    
+
     This eliminates the HTTP POST overhead for every MCP tool call.
     """
     ws = web.WebSocketResponse()
@@ -356,16 +348,18 @@ async def handle_status(request):
     """HTTP endpoint: server status."""
     now = _now()
     uptime = now - server_start_time
-    return web.json_response({
-        "version": "1.5.0",
-        "extension_connected": extension_ws is not None and not extension_ws.closed,
-        "tab_id": tab_id,
-        "extension_info": extension_info,
-        "pending_requests": len(pending_requests),
-        "uptime": uptime,
-        "uptime_str": f"{uptime:.0f}s",
-        "last_message_ago": (now - last_message_time) if last_message_time > 0 else None,
-    })
+    return web.json_response(
+        {
+            "version": "1.5.0",
+            "extension_connected": extension_ws is not None and not extension_ws.closed,
+            "tab_id": tab_id,
+            "extension_info": extension_info,
+            "pending_requests": len(pending_requests),
+            "uptime": uptime,
+            "uptime_str": f"{uptime:.0f}s",
+            "last_message_ago": (now - last_message_time) if last_message_time > 0 else None,
+        }
+    )
 
 
 async def handle_cdp_get(request):
@@ -448,11 +442,13 @@ async def handle_recent(request):
         lines = "\n".join(json.dumps(e, default=str) for e in events)
         return web.Response(text=lines, content_type="text/plain")
 
-    return web.json_response({
-        "count": len(events),
-        "buffer_fill": len(buf),
-        "events": events,
-    })
+    return web.json_response(
+        {
+            "count": len(events),
+            "buffer_fill": len(buf),
+            "events": events,
+        }
+    )
 
 
 async def handle_tabs_list(request):

@@ -2,7 +2,7 @@
 
 A Chrome DevTools Protocol relay that bridges remote browser control between a Chrome extension and automation agents (Hermes, custom scripts) via WebSocket + HTTP.
 
-**Version 2.3.0** — 46 tools across MCP server + Hermes plugin, content script fast path, snapshot caching, multi-tab attach, WS circuit breaker, smart CS retry, mutation observer debouncing, and 91 passing tests.
+**Version 2.4.0** — **111 tests** (63 Python + 48 JS), 0 failures. ESLint clean (source), ruff clean, pre-commit hooks, dependabot, all version files in sync.
 
 ## Architecture
 
@@ -31,6 +31,16 @@ A Chrome DevTools Protocol relay that bridges remote browser control between a C
 **Snapshot Cache** — 2s TTL with invalidation on Page.navigate/reload/back/forward. Eliminates redundant DOM walks during multi-step flows.
 
 **WS Circuit Breaker** — 3 consecutive WS failures → skip WS attempts for 30s. Prevents 5s ping() timeouts on dead connections blocking tool calls.
+
+## What's New in v2.4.0
+
+- ✅ **Makefile targets fixed** — `lint`, `test-ext`, `test-mcp` all work correctly
+- ✅ **Extension source restored** — `content-script.src.js` for editable source
+- ✅ **ESLint + pre-commit + dependabot** — JS linting, ruff hooks, dep updates
+- ✅ **Version sync** — `VERSION`, `manifest.json`, `plugin.yaml`, `package.json` all at 2.3.1
+- ✅ **`capture_server.py` archived** — dead code moved to `archive/`
+- ✅ **`make install`** — single-command dev setup
+- ✅ **111 tests** — 63 Python + 48 JavaScript, all passing
 
 ## What's New in v2.3.0
 

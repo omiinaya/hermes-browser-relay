@@ -131,10 +131,7 @@ def _parse_js_result(result):
 
 def _eval_js(expression):
     """Evaluate JavaScript and return the parsed result."""
-    result = send_cdp("Runtime.evaluate", {
-        "expression": expression,
-        "returnByValue": True
-    })
+    result = send_cdp("Runtime.evaluate", {"expression": expression, "returnByValue": True})
     return _parse_js_result(result)
 
 
@@ -184,10 +181,7 @@ def cmd_navigate(url):
 
 def cmd_eval(expression):
     """Evaluate JavaScript in the page."""
-    result = send_cdp("Runtime.evaluate", {
-        "expression": expression,
-        "returnByValue": True
-    })
+    result = send_cdp("Runtime.evaluate", {"expression": expression, "returnByValue": True})
     if "result" in result:
         r = result["result"]
         if "result" in r and "value" in r["result"]:
@@ -205,6 +199,7 @@ def cmd_screenshot():
     result = send_cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
     if "result" in result and "data" in result["result"]:
         import base64
+
         png_data = base64.b64decode(result["result"]["data"])
         path = f"/tmp/cdp_screenshot_{int(time.time())}.png"
         with open(path, "wb") as f:
@@ -229,10 +224,7 @@ def cmd_click(selector):
         }};
     }})()
     """
-    result = send_cdp("Runtime.evaluate", {
-        "expression": expr,
-        "returnByValue": True
-    })
+    result = send_cdp("Runtime.evaluate", {"expression": expr, "returnByValue": True})
 
     try:
         coords = result["result"]["result"]["value"]
@@ -243,20 +235,8 @@ def cmd_click(selector):
         print(f"Clicking '{coords.get('text', '?')}' at ({x:.0f}, {y:.0f})")
 
         # Dispatch mouse click via CDP
-        send_cdp("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": round(x),
-            "y": round(y),
-            "button": "left",
-            "clickCount": 1
-        })
-        send_cdp("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": round(x),
-            "y": round(y),
-            "button": "left",
-            "clickCount": 1
-        })
+        send_cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": round(x), "y": round(y), "button": "left", "clickCount": 1})
+        send_cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": round(x), "y": round(y), "button": "left", "clickCount": 1})
     except (KeyError, TypeError) as e:
         print(f"Click failed: {e}")
         print(json.dumps(result, indent=2))
@@ -297,10 +277,22 @@ def cmd_type_enter():
 def cmd_snapshot(full=False):
     """Get an accessibility-style snapshot of the current page."""
     selectors = [
-        "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
-        "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]",
-        "[role=tab]", "[role=menuitem]", "[role=option]",
-        "[tabindex]:not([tabindex='-1'])", "summary", "details", "[contenteditable=true]"
+        "a[href]",
+        "button",
+        "input:not([type=hidden])",
+        "select",
+        "textarea",
+        "[role=button]",
+        "[role=link]",
+        "[role=checkbox]",
+        "[role=radio]",
+        "[role=tab]",
+        "[role=menuitem]",
+        "[role=option]",
+        "[tabindex]:not([tabindex='-1'])",
+        "summary",
+        "details",
+        "[contenteditable=true]",
     ]
     expr = f"""
     (() => {{
@@ -353,12 +345,14 @@ def cmd_snapshot(full=False):
     items = result.get("items", [])
     print(f"📄 {info.get('title', '?')}")
     print(f"🌐 {info.get('url', '?')}")
-    print(f"📐 {info.get('viewport', {}).get('w','?')}×{info.get('viewport', {}).get('h','?')} — {info.get('visible','?')} visible of {info.get('total','?')} elements")
+    print(
+        f"📐 {info.get('viewport', {}).get('w', '?')}×{info.get('viewport', {}).get('h', '?')} — {info.get('visible', '?')} visible of {info.get('total', '?')} elements"
+    )
     print()
     for it in items[:60]:
         vis = "⬆ " if not it.get("visible") else ""
         label = it.get("text", "") or it.get("tag", "")
-        print(f"  [{it['ref']}] {vis}{it['tag']} \"{label[:70]}\" @({it['x']},{it['y']})")
+        print(f'  [{it["ref"]}] {vis}{it["tag"]} "{label[:70]}" @({it["x"]},{it["y"]})')
     if len(items) > 60:
         print(f"  ... and {len(items) - 60} more")
     if full:
@@ -405,21 +399,25 @@ def cmd_find(query, selector=None, max_results=20):
     results = result.get("results", [])
     print(f"Found {result.get('count', 0)} elements matching '{query}':")
     for it in results:
-        print(f"  [{it['ref']}] <{it['tag']}> \"{it.get('text', '')[:70]}\" @({it['x']},{it['y']})")
+        print(f'  [{it["ref"]}] <{it["tag"]}> "{it.get("text", "")[:70]}" @({it["x"]},{it["y"]})')
 
 
 def cmd_pdf(landscape=False, scale=1.0):
     """Save the current page as a PDF document."""
-    result = send_cdp("Page.printToPDF", {
-        "landscape": landscape,
-        "scale": scale,
-        "paperWidth": 8.27,
-        "paperHeight": 11.69,
-        "printBackground": True,
-        "preferCSSPageSize": True,
-    })
+    result = send_cdp(
+        "Page.printToPDF",
+        {
+            "landscape": landscape,
+            "scale": scale,
+            "paperWidth": 8.27,
+            "paperHeight": 11.69,
+            "printBackground": True,
+            "preferCSSPageSize": True,
+        },
+    )
     if "result" in result and "data" in result["result"]:
         import base64
+
         pdf_data = base64.b64decode(result["result"]["data"])
         path = f"/tmp/cdp_pdf_{int(time.time())}.pdf"
         with open(path, "wb") as f:
@@ -442,8 +440,7 @@ def cmd_dismiss_dialog(accept=True, prompt_text=""):
         print(f"{action} dialog")
 
 
-def cmd_set_cookie(name, value, url=None, domain=None, path="/",
-                   secure=False, http_only=False, same_site=None):
+def cmd_set_cookie(name, value, url=None, domain=None, path="/", secure=False, http_only=False, same_site=None):
     """Set a browser cookie."""
     params = {"name": name, "value": value}
     if url:
@@ -541,9 +538,12 @@ def cmd_upload_file(selector, file_paths):
     # Use CDP DOM.setFileInputFiles
     if not isinstance(file_paths, list):
         file_paths = [file_paths]
-    result = send_cdp("DOM.setFileInputFiles", {
-        "files": file_paths,
-    })
+    result = send_cdp(
+        "DOM.setFileInputFiles",
+        {
+            "files": file_paths,
+        },
+    )
     if "error" in result:
         print(f"Upload error: {result['error']}")
     else:
@@ -653,6 +653,7 @@ def cmd_wait_selector(selector, timeout=15, state="visible"):
 def cmd_wait_for_navigation(tab_id=None, timeout=30):
     """Wait for a page navigation to complete by polling the relay's event buffer."""
     import time as _time
+
     deadline = _time.time() + timeout
     since = 0
     while _time.time() < deadline:
@@ -895,28 +896,44 @@ def cmd_click_text(text, tag=None):
 
 def cmd_key(key_name):
     """Press a keyboard key."""
-    send_cdp("Input.dispatchKeyEvent", {
-        "type": "rawKeyDown",
-        "key": key_name,
-        "windowsVirtualKeyCode": _key_to_vk(key_name)
-    })
-    send_cdp("Input.dispatchKeyEvent", {
-        "type": "keyUp",
-        "key": key_name,
-        "windowsVirtualKeyCode": _key_to_vk(key_name)
-    })
+    send_cdp("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": key_name, "windowsVirtualKeyCode": _key_to_vk(key_name)})
+    send_cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": key_name, "windowsVirtualKeyCode": _key_to_vk(key_name)})
     print(f"Pressed '{key_name}'")
 
 
 def _key_to_vk(key):
     """Map common key names to Windows virtual key codes."""
     mapping = {
-        "Escape": 27, "Enter": 13, "Tab": 9, "Backspace": 8, "Delete": 46,
-        "ArrowUp": 38, "ArrowDown": 40, "ArrowLeft": 37, "ArrowRight": 39,
-        "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
-        "F1": 112, "F2": 113, "F3": 114, "F4": 115, "F5": 116, "F6": 117,
-        "F7": 118, "F8": 119, "F9": 120, "F10": 121, "F11": 122, "F12": 123,
-        "Space": 32, "Control": 17, "Shift": 16, "Alt": 18, "Meta": 91,
+        "Escape": 27,
+        "Enter": 13,
+        "Tab": 9,
+        "Backspace": 8,
+        "Delete": 46,
+        "ArrowUp": 38,
+        "ArrowDown": 40,
+        "ArrowLeft": 37,
+        "ArrowRight": 39,
+        "Home": 36,
+        "End": 35,
+        "PageUp": 33,
+        "PageDown": 34,
+        "F1": 112,
+        "F2": 113,
+        "F3": 114,
+        "F4": 115,
+        "F5": 116,
+        "F6": 117,
+        "F7": 118,
+        "F8": 119,
+        "F9": 120,
+        "F10": 121,
+        "F11": 122,
+        "F12": 123,
+        "Space": 32,
+        "Control": 17,
+        "Shift": 16,
+        "Alt": 18,
+        "Meta": 91,
     }
     return mapping.get(key, 0)
 
@@ -1086,8 +1103,7 @@ def main():
     p = sub.add_parser("wait_selector", help="Wait for CSS selector to appear")
     p.add_argument("selector", help="CSS selector to wait for")
     p.add_argument("--timeout", type=int, default=15, help="Max seconds to wait")
-    p.add_argument("--state", choices=["visible", "attached"], default="visible",
-                   help="'visible' (default) or 'attached' (exists in DOM)")
+    p.add_argument("--state", choices=["visible", "attached"], default="visible", help="'visible' (default) or 'attached' (exists in DOM)")
 
     p = sub.add_parser("wait_nav", help="Wait for page navigation")
     p.add_argument("--timeout", type=int, default=30, help="Max seconds to wait")
@@ -1099,8 +1115,7 @@ def main():
 
     p = sub.add_parser("create_tab", help="Create new tab")
     p.add_argument("--url", default="about:blank", help="URL to open")
-    p.add_argument("--no-active", dest="active", action="store_false", default=True,
-                   help="Don't make the tab active")
+    p.add_argument("--no-active", dest="active", action="store_false", default=True, help="Don't make the tab active")
 
     p = sub.add_parser("close_tab", help="Close a tab")
     p.add_argument("tab_id", type=int, help="Tab ID to close")
@@ -1131,8 +1146,7 @@ def main():
     p.add_argument("key", help="Key name (e.g., Escape, Tab, ArrowDown)")
 
     p = sub.add_parser("scroll", help="Scroll page")
-    p.add_argument("--dir", choices=["up", "down", "left", "right"], default="down",
-                   help="Scroll direction")
+    p.add_argument("--dir", choices=["up", "down", "left", "right"], default="down", help="Scroll direction")
     p.add_argument("--amount", type=int, default=0, help="Pixels to scroll (0 = viewport/2)")
 
     p = sub.add_parser("response_body", help="Query captured response bodies")
@@ -1141,8 +1155,7 @@ def main():
     p.add_argument("--since", type=float, default=0, help="Only after timestamp (epoch ms)")
 
     p = sub.add_parser("network_requests", help="Query captured network requests")
-    p.add_argument("--event", choices=["completed", "error", "beforeRequest",
-                   "beforeSendHeaders", "headersReceived"], help="Filter by event type")
+    p.add_argument("--event", choices=["completed", "error", "beforeRequest", "beforeSendHeaders", "headersReceived"], help="Filter by event type")
     p.add_argument("--since", type=float, default=0, help="Only after timestamp (epoch ms)")
     p.add_argument("--limit", type=int, default=20, help="Max events (default: 20)")
 
@@ -1203,12 +1216,12 @@ def main():
         cmd_pdf(landscape=args.landscape, scale=args.scale)
 
     elif args.command == "dismiss_dialog":
-        cmd_dismiss_dialog(accept=args.accept, prompt_text=getattr(args, 'prompt_text', ''))
+        cmd_dismiss_dialog(accept=args.accept, prompt_text=getattr(args, "prompt_text", ""))
 
     elif args.command == "set_cookie":
-        cmd_set_cookie(args.name, args.value, url=args.url, domain=args.domain,
-                       path=args.path, secure=args.secure, http_only=args.http_only,
-                       same_site=args.same_site)
+        cmd_set_cookie(
+            args.name, args.value, url=args.url, domain=args.domain, path=args.path, secure=args.secure, http_only=args.http_only, same_site=args.same_site
+        )
 
     elif args.command == "block_patterns":
         cmd_block_patterns(args.patterns)
@@ -1282,7 +1295,7 @@ def main():
         cmd_fill_by_label(args.label, args.text)
 
     elif args.command == "click_text":
-        cmd_click_text(args.text, tag=getattr(args, 'tag', None))
+        cmd_click_text(args.text, tag=getattr(args, "tag", None))
 
     elif args.command == "key":
         cmd_key(args.key)

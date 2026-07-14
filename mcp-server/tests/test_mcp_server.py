@@ -6,6 +6,7 @@ handler dispatch, and individual handler logic with mocked CDP layer.
 
 Run:    python3 -m pytest mcp-server/tests/ -v
 """
+
 import sys
 import unittest.mock
 
@@ -23,10 +24,10 @@ sys.modules["mcp_server_module"] = mcp
 _spec.loader.exec_module(mcp)
 
 
-
 # =========================================================================
 # Tool Definitions Tests
 # =========================================================================
+
 
 class TestToolDefinitions:
     """Verify TOOL_DEFS and list_tools work correctly."""
@@ -44,21 +45,28 @@ class TestToolDefinitions:
 
     def test_essential_tools_exist(self):
         essential = [
-            "browser_navigate", "browser_click", "browser_type",
-            "browser_snapshot", "browser_eval", "browser_screenshot",
-            "browser_do", "browser_navigate_wait",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_snapshot",
+            "browser_eval",
+            "browser_screenshot",
+            "browser_do",
+            "browser_navigate_wait",
         ]
         for tool in essential:
             assert tool in mcp.TOOL_DEFS
 
     def test_all_tools_get_tab_id(self):
         import asyncio
+
         tools = asyncio.run(mcp.list_tools())
         for t in tools:
             assert "tab_id" in t.inputSchema["properties"], f"{t.name} missing tab_id"
 
     def test_list_tools_count(self):
         import asyncio
+
         tools = asyncio.run(mcp.list_tools())
         assert len(tools) == len(mcp.TOOL_DEFS)
 
@@ -66,6 +74,7 @@ class TestToolDefinitions:
 # =========================================================================
 # Handler Dispatch Tests
 # =========================================================================
+
 
 class TestHandlerDispatch:
     """Verify HANDLER_MAP and the dispatch function work."""
@@ -83,16 +92,19 @@ class TestHandlerDispatch:
 
     def test_unknown_tool(self):
         import asyncio
+
         result = asyncio.run(mcp._handle_unknown("nope"))
         assert "Unknown" in result[0].text
 
     def test_call_tool_unknown(self):
         import asyncio
+
         result = asyncio.run(mcp.call_tool("nope", {}))
         assert "Unknown" in result[0].text
 
     def test_call_tool_catches_exception(self):
         import asyncio
+
         result = asyncio.run(mcp.call_tool("browser_navigate", {}))
         assert "Error" in result[0].text
 
@@ -101,17 +113,20 @@ class TestHandlerDispatch:
 # Handler Unit Tests (with mocks)
 # =========================================================================
 
+
 class TestNavigate:
     def test_calls_cdp(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_cdp', return_value={"result": {"frameId": "abc"}}):
-            with unittest.mock.patch.object(mcp, '_invalidate_cache'):
+
+        with unittest.mock.patch.object(mcp, "_cdp", return_value={"result": {"frameId": "abc"}}):
+            with unittest.mock.patch.object(mcp, "_invalidate_cache"):
                 asyncio.run(mcp._handle_browser_navigate({"url": "https://ex.com"}))
                 mcp._cdp.assert_called_once_with("Page.navigate", {"url": "https://ex.com"})
 
     def test_cdp_error(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_cdp', return_value={"error": "Failed"}):
+
+        with unittest.mock.patch.object(mcp, "_cdp", return_value={"error": "Failed"}):
             r = asyncio.run(mcp._handle_browser_navigate({"url": "https://ex.com"}))
             assert "Error" in r[0].text
 
@@ -119,8 +134,9 @@ class TestNavigate:
 class TestEval:
     def test_calls_runtime_evaluate(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_cdp'):
-            with unittest.mock.patch.object(mcp, '_parse_result', return_value="42"):
+
+        with unittest.mock.patch.object(mcp, "_cdp"):
+            with unittest.mock.patch.object(mcp, "_parse_result", return_value="42"):
                 asyncio.run(mcp._handle_browser_eval({"expression": "1+1"}))
                 mcp._cdp.assert_called_once_with("Runtime.evaluate", {"expression": "1+1", "returnByValue": True})
 
@@ -128,20 +144,22 @@ class TestEval:
 class TestSnapshot:
     def test_uses_cache(self):
         import asyncio
+
         cached = {"info": {"title": "cached"}, "items": []}
-        with unittest.mock.patch.object(mcp, '_get_cached_snapshot', return_value=cached):
-            with unittest.mock.patch.object(mcp, '_hermes_call') as h:
+        with unittest.mock.patch.object(mcp, "_get_cached_snapshot", return_value=cached):
+            with unittest.mock.patch.object(mcp, "_hermes_call") as h:
                 r = asyncio.run(mcp._handle_browser_snapshot({"full": False}))
                 h.assert_not_called()
                 assert "cached" in r[0].text
 
     def test_cache_miss(self):
         import asyncio
+
         snap = {"info": {"title": "fresh"}, "items": []}
-        with unittest.mock.patch.object(mcp, '_get_cached_snapshot', return_value=None):
-            with unittest.mock.patch.object(mcp, '_hermes_call', return_value={}):
-                with unittest.mock.patch.object(mcp, '_parse_result', return_value=snap):
-                    with unittest.mock.patch.object(mcp, '_cache_snapshot'):
+        with unittest.mock.patch.object(mcp, "_get_cached_snapshot", return_value=None):
+            with unittest.mock.patch.object(mcp, "_hermes_call", return_value={}):
+                with unittest.mock.patch.object(mcp, "_parse_result", return_value=snap):
+                    with unittest.mock.patch.object(mcp, "_cache_snapshot"):
                         r = asyncio.run(mcp._handle_browser_snapshot({"full": False}))
                         assert "fresh" in r[0].text
 
@@ -149,50 +167,54 @@ class TestSnapshot:
 class TestDo:
     def test_empty_actions(self):
         import asyncio
+
         r = asyncio.run(mcp._handle_browser_do({}))
         assert "non-empty" in r[0].text
 
     def test_click(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_hermes_call', return_value={}):
-            with unittest.mock.patch.object(mcp, '_parse_result', return_value={"ok": True}):
-                r = asyncio.run(mcp._handle_browser_do({
-                    "actions": [{"action": "click", "selector": "#btn"}]
-                }))
+
+        with unittest.mock.patch.object(mcp, "_hermes_call", return_value={}):
+            with unittest.mock.patch.object(mcp, "_parse_result", return_value={"ok": True}):
+                r = asyncio.run(mcp._handle_browser_do({"actions": [{"action": "click", "selector": "#btn"}]}))
                 assert "1 actions" in r[0].text
 
     def test_multiple(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_hermes_call', return_value={}):
-            with unittest.mock.patch.object(mcp, '_parse_result', return_value={"ok": True}):
-                r = asyncio.run(mcp._handle_browser_do({
-                    "actions": [
-                        {"action": "click", "selector": "#b"},
-                        {"action": "type", "selector": "#i", "text": "hi"},
-                    ]
-                }))
+
+        with unittest.mock.patch.object(mcp, "_hermes_call", return_value={}):
+            with unittest.mock.patch.object(mcp, "_parse_result", return_value={"ok": True}):
+                r = asyncio.run(
+                    mcp._handle_browser_do(
+                        {
+                            "actions": [
+                                {"action": "click", "selector": "#b"},
+                                {"action": "type", "selector": "#i", "text": "hi"},
+                            ]
+                        }
+                    )
+                )
                 assert "2 actions" in r[0].text
 
     def test_unknown_action(self):
         import asyncio
-        r = asyncio.run(mcp._handle_browser_do({
-            "actions": [{"action": "wobble"}]
-        }))
+
+        r = asyncio.run(mcp._handle_browser_do({"actions": [{"action": "wobble"}]}))
         assert "Unknown" in r[0].text
 
     def test_screenshot(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_cdp', return_value={"result": {"data": "b64"}}):
-            r = asyncio.run(mcp._handle_browser_do({
-                "actions": [{"action": "screenshot"}]
-            }))
+
+        with unittest.mock.patch.object(mcp, "_cdp", return_value={"result": {"data": "b64"}}):
+            r = asyncio.run(mcp._handle_browser_do({"actions": [{"action": "screenshot"}]}))
             assert "Screenshot" in r[0].text
 
 
 class TestScreenshot:
     def test_error_path(self):
         import asyncio
-        with unittest.mock.patch.object(mcp, '_cdp', return_value={"error": "fail"}):
+
+        with unittest.mock.patch.object(mcp, "_cdp", return_value={"error": "fail"}):
             r = asyncio.run(mcp._handle_browser_screenshot({}))
             assert "Error" in r[0].text
 
@@ -201,6 +223,7 @@ class TestScreenshot:
 # Helper Integrity Tests
 # =========================================================================
 
+
 class TestHelpers:
     def test_js_quote(self):
         assert mcp._js_quote("test") == '"test"'
@@ -208,6 +231,7 @@ class TestHelpers:
 
     def test_invalidate_cache(self):
         from shared import _snapshot_cache, invalidate_cache
+
         _snapshot_cache[("t", False)] = {"data": {}, "ts": 1000.0}
         invalidate_cache()
         assert len(_snapshot_cache) == 0
