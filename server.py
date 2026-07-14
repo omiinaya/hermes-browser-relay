@@ -913,6 +913,7 @@ async def main():
     parser = argparse.ArgumentParser(description="CDP Relay Server")
     parser.add_argument("--port", type=int, default=9223, help="Server port (default: 9223)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--version", action="version", version=f"browser-relay-server {VERSION}")
     args = parser.parse_args()
 
     server_start_time = _now()
@@ -951,6 +952,8 @@ async def main():
     print(f"  Events (SSE): http://{args.host}:{args.port}/events")
     print(f"  Recent:       http://{args.host}:{args.port}/recent?limit=20&mode=nav")
     print(f"  Tabs:         http://{args.host}:{args.port}/tabs")
+    print(f"  Tab CDP:      http://{args.host}:{args.port}/cdp/{{tabId}}")
+    print(f"  Wait Nav:     http://{args.host}:{args.port}/wait-nav?since=...&timeout=30")
     print(f"  Block:        http://{args.host}:{args.port}/block/patterns")
     print()
     print("  Install extension → chrome://extensions/ → Load unpacked")

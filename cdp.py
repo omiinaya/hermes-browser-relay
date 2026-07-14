@@ -137,11 +137,18 @@ def _eval_js(expression):
     return _parse_js_result(result)
 
 
-def watch_events():
+def watch_events(server_url=None):
     """Stream CDP events via SSE using buffered reads."""
     import http.client
+    from urllib.parse import urlparse
 
-    conn = http.client.HTTPConnection("127.0.0.1", 9223, timeout=300)
+    if server_url is None:
+        server_url = SERVER
+    parsed = urlparse(server_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9223
+
+    conn = http.client.HTTPConnection(host, port, timeout=300)
     conn.request("GET", "/events")
     resp = conn.getresponse()
 
@@ -1262,7 +1269,7 @@ def main():
         print(json.dumps(result, indent=2))
 
     elif args.command == "watch":
-        watch_events()
+        watch_events(SERVER)
 
     # --- New command dispatch ---
 
