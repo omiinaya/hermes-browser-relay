@@ -60,12 +60,14 @@ Usage examples:
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
 import urllib.error
 
-VERSION = "2.0.0"
+_VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+VERSION = open(_VERSION_FILE).read().strip() if os.path.exists(_VERSION_FILE) else "2.0.0"
 SERVER = "http://127.0.0.1:9223"
 
 
@@ -1010,12 +1012,70 @@ def cmd_network_requests(event=None, since=0, limit=20):
 
 
 # ---------------------------------------------------------------------------
+# Auto-start relay
+# ---------------------------------------------------------------------------
+
+
+def _ensure_relay() -> str | None:
+    """Start the CDP relay server if not already running."""
+    import subprocess as _sub
+
+    # First check if relay is already running
+    try:
+        req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as _resp:
+            if _resp.status == 200:
+                return None
+    except Exception:
+        pass
+
+    # Find server.py
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _candidates = [
+        os.path.normpath(os.path.join(_script_dir, "server.py")),
+        os.path.normpath(os.path.join(_script_dir, "..", "server.py")),
+    ]
+    _server_script = None
+    for _c in _candidates:
+        if os.path.exists(_c):
+            _server_script = _c
+            break
+
+    if not _server_script:
+        return "Cannot find server.py"
+
+    try:
+        _sub.Popen([_server_script], stdout=_sub.DEVNULL, stderr=_sub.DEVNULL, cwd=os.path.dirname(_server_script))
+    except Exception as e:
+        return f"Failed to start relay: {e}"
+
+    # Wait for it
+    for _ in range(20):
+        import time as _t
+        _t.sleep(0.3)
+        try:
+            req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as _resp:
+                if _resp.status == 200:
+                    return None
+        except Exception:
+            pass
+    return "Relay started but not responding"
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main():
     global SERVER
+
+    # Auto-start relay if not running
+    _relay_err = _ensure_relay()
+    if _relay_err:
+        print(f"Warning: {_relay_err}", file=sys.stderr)
+
     parser = argparse.ArgumentParser(description="CDP Client — control Chrome via CDP relay")
     SERVER_DEFAULT = SERVER
     parser.add_argument("--server", default=None, help=f"CDP relay server (default: {SERVER_DEFAULT})")

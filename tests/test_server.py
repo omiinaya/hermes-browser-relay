@@ -84,7 +84,7 @@ class TestStatus:
         resp = await client.get("/status")
         assert resp.status == 200
         data = await resp.json()
-        assert data["version"] == "1.5.0"
+        assert data["version"] == "2.4.0"
         assert data["extension_connected"] is False
         assert data["tab_id"] is None
         assert data["pending_requests"] == 0

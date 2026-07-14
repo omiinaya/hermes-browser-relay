@@ -34,6 +34,7 @@ import time
 import base64
 import os
 import subprocess
+import threading
 import urllib.request
 import urllib.error
 from typing import Any
@@ -107,13 +108,13 @@ CDP_SERVER = os.environ.get("CDP_SERVER", "http://127.0.0.1:9223")
 TOOL_TIMEOUT = int(os.environ.get("TOOL_TIMEOUT", "60"))
 
 # Tab targeting — set before CDP calls to route to a specific tab attachment
-_shared_tab_id: int | None = None
+_thread_local = threading.local()
+_thread_local.tab_id = None
 
 
 def _set_tab(arguments: dict | None) -> None:
     """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
-    global _shared_tab_id
-    _shared_tab_id = arguments.get("tab_id") if arguments else None
+    _thread_local.tab_id = arguments.get("tab_id") if arguments else None
 
 
 def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
@@ -226,8 +227,8 @@ def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, *
     body_dict = {"method": method, "params": params or {}, "timeout": timeout}
     for k, v in extra.items():
         body_dict[k] = v
-    if _shared_tab_id is not None:
-        body_dict["tabId"] = _shared_tab_id
+    if getattr(_thread_local, 'tab_id', None) is not None:
+        body_dict["tabId"] = _thread_local.tab_id
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:
@@ -894,12 +895,34 @@ def _handle_browser_screenshot(args: dict) -> str:
     return "No screenshot data"
 
 def _handle_browser_status(args: dict) -> str:
+    # Try hitting the CDP relay status endpoint first
     try:
         req = urllib.request.Request(f"{CDP_SERVER}/status")
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.dumps(json.loads(resp.read().decode()), indent=2)
-    except Exception as e:
-        return f"CDP relay unreachable: {e}"
+    except Exception:
+        pass
+
+    # Relay not responding — check if we started one
+    global _relay_process
+    if _relay_process is not None:
+        return json.dumps({
+            "status": "degraded",
+            "message": "Relay running but not responding",
+            "pid": _relay_process.pid,
+        }, indent=2)
+
+    # No relay process — try auto-starting
+    err = _ensure_relay()
+    if err:
+        return json.dumps({
+            "status": "error",
+            "message": f"Relay unavailable and auto-start failed: {err}",
+        }, indent=2)
+    return json.dumps({
+        "status": "started",
+        "message": "Relay auto-started",
+    }, indent=2)
 
 def _handle_browser_send_cdp(args: dict) -> str:
     result = _cdp(args["method"], args.get("params", {}))
@@ -907,7 +930,7 @@ def _handle_browser_send_cdp(args: dict) -> str:
 
 def _handle_browser_snapshot(args: dict) -> str:
     full = args.get("full", False)
-    cached = _get_cached_snapshot(_shared_tab_id, full)
+    cached = _get_cached_snapshot(getattr(_thread_local, 'tab_id', None), full)
     if cached is not None:
         snap = cached
     else:
@@ -954,7 +977,7 @@ def _handle_browser_snapshot(args: dict) -> str:
         snap = _parse_result(result)
         if isinstance(snap, dict) and "error" in snap:
             return f"Snapshot error: {snap['error']}"
-        _cache_snapshot(_shared_tab_id, full, snap)
+        _cache_snapshot(getattr(_thread_local, 'tab_id', None), full, snap)
     info = snap.get("info", {})
     items = snap.get("items", [])
     lines = [
@@ -2101,7 +2124,17 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     def shutdown(self) -> None:
-        pass
+        global _relay_process
+        if _relay_process is not None:
+            try:
+                _relay_process.terminate()
+                _relay_process.wait(timeout=5)
+            except Exception:
+                try:
+                    _relay_process.kill()
+                except Exception:
+                    pass
+            _relay_process = None
 
 
 # ---------------------------------------------------------------------------

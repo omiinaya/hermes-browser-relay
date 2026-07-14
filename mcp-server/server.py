@@ -107,6 +107,54 @@ CDP_SERVER = os.environ.get("CDP_RELAY_URL", "http://127.0.0.1:9223")
 CAPTURE_SERVER = os.environ.get("CAPTURE_SERVER_URL", "")  # Legacy, kept for compat
 CDP_TIMEOUT = int(os.environ.get("CDP_RELAY_TIMEOUT", "60"))
 
+
+def _ensure_relay() -> str | None:
+    """Start the CDP relay server if not already running."""
+    import subprocess as _sub
+
+    # First check if relay is already running
+    try:
+        req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as _resp:
+            if _resp.status == 200:
+                return None
+    except Exception:
+        pass
+
+    # Find server.py
+    _mcp_dir = os.path.dirname(os.path.abspath(__file__))
+    _candidates = [
+        os.path.normpath(os.path.join(_mcp_dir, "..", "server.py")),
+        os.path.normpath(os.path.join(_mcp_dir, "..", "..", "server.py")),
+    ]
+    _server_script = None
+    for _c in _candidates:
+        if os.path.exists(_c):
+            _server_script = _c
+            break
+
+    if not _server_script:
+        return "Cannot find server.py"
+
+    try:
+        _sub.Popen([_server_script], stdout=_sub.DEVNULL, stderr=_sub.DEVNULL, cwd=os.path.dirname(_server_script))
+    except Exception as e:
+        return f"Failed to start relay: {e}"
+
+    # Wait for it
+    for _ in range(20):
+        import time as _t
+        _t.sleep(0.3)
+        try:
+            req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as _resp:
+                if _resp.status == 200:
+                    return None
+        except Exception:
+            pass
+    return "Relay started but not responding"
+
+
 # Tab targeting — set before CDP calls to route to a specific tab attachment
 _shared_tab_id: int | None = None
 
@@ -996,17 +1044,38 @@ async def _handle_browser_status(arguments: dict) -> list[TextContent | ImageCon
         req = urllib.request.Request(f"{CDP_SERVER}/status")
         with urllib.request.urlopen(req, timeout=5) as resp:
             status = json.loads(resp.read().decode())
+        status["relay"] = {
+            "url": CDP_SERVER,
+            "reachable": True,
+        }
         status["watchdog"] = {
             "connected": _connection_ok,
             "running": _watchdog_running,
         }
         return [TextContent(type="text", text=json.dumps(status, indent=2))]
     except Exception as e:
-        return [
-            TextContent(
-                type="text", text=f"CDP relay unreachable: {e}\nWatchdog: {'running' if _watchdog_running else 'stopped'} (last check: {_connection_ok})"
-            )
-        ]
+        # Auto-start relay if unreachable
+        _ensure_relay()
+        try:
+            req = urllib.request.Request(f"{CDP_SERVER}/status")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                status = json.loads(resp.read().decode())
+            status["relay"] = {
+                "url": CDP_SERVER,
+                "reachable": True,
+                "auto_started": True,
+            }
+            status["watchdog"] = {
+                "connected": _connection_ok,
+                "running": _watchdog_running,
+            }
+            return [TextContent(type="text", text=json.dumps(status, indent=2))]
+        except Exception:
+            return [
+                TextContent(
+                    type="text", text=f"CDP relay unreachable: {e}\nWatchdog: {'running' if _watchdog_running else 'stopped'} (last check: {_connection_ok})"
+                )
+            ]
 
 
 async def _handle_browser_send_cdp(arguments: dict) -> list[TextContent | ImageContent]:
@@ -2399,6 +2468,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 def main():
     import asyncio
 
+    _ensure_relay()
     start_watchdog()
 
     async def run():

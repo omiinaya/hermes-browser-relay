@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
 import signal
@@ -63,6 +64,38 @@ last_message_time = 0.0
 server_start_time = 0.0
 _heartbeat_task = None
 _stale_sweep_task = None
+_cdp_id_counter = itertools.count()
+
+# Rate limiter state — per-IP token bucket
+_rate_limiters = {}  # ip -> {"tokens": float, "last_refill": float}
+RATE_LIMIT_PER_SEC = 30
+RATE_LIMIT_BURST = 50
+
+# Read version from VERSION file in the same directory as this script
+_HERE = Path(__file__).resolve().parent
+try:
+    VERSION = _HERE.joinpath("VERSION").read_text().strip()
+except Exception:
+    VERSION = "unknown"
+
+
+@web.middleware
+async def cors_middleware(request, handler):
+    """Add CORS headers to all responses and handle preflight OPTIONS requests."""
+    if request.method == "OPTIONS":
+        return web.Response(
+            status=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            },
+        )
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 
 def _now():
@@ -114,6 +147,13 @@ def _capture_event(data: dict) -> None:
     """Write event to capture file and in-memory buffer."""
     if "ts" not in data:
         data["_received"] = time.time() * 1000
+    # Rotate if file exceeds 10MB
+    MAX_CAPTURE_SIZE = 10 * 1024 * 1024  # 10MB
+    if CAPTURE_FILE.exists() and CAPTURE_FILE.stat().st_size > MAX_CAPTURE_SIZE:
+        rotated = CAPTURE_FILE.with_suffix(".jsonl.1")
+        rotated.unlink(missing_ok=True)
+        CAPTURE_FILE.rename(rotated)
+        log.info(f"Rotated capture file: {CAPTURE_FILE.name} -> {rotated.name}")
     # Write to file
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     with open(CAPTURE_FILE, "a") as f:
@@ -261,7 +301,7 @@ async def _execute_cdp_raw(body: dict) -> dict:
         return {"error": "Missing 'method'"}
 
     # Generate unique ID
-    cdp_id = int(time.time() * 1000000) % (2**31)
+    cdp_id = next(_cdp_id_counter)
 
     # Create future for response
     loop = asyncio.get_running_loop()
@@ -335,8 +375,31 @@ async def handle_mcp_connection(request):
         log.info(f"MCP server disconnected (was from {remote})")
 
 
+def _check_rate_limit(request) -> bool:
+    """Token-bucket rate limiter: returns True if request is allowed, False if rate-limited."""
+    ip = request.remote or "unknown"
+    now = time.time()
+    state = _rate_limiters.get(ip)
+    if state is None:
+        _rate_limiters[ip] = {"tokens": RATE_LIMIT_BURST - 1, "last_refill": now}
+        return True
+
+    # Refill tokens based on elapsed time
+    elapsed = now - state["last_refill"]
+    state["tokens"] = min(RATE_LIMIT_BURST, state["tokens"] + elapsed * RATE_LIMIT_PER_SEC)
+    state["last_refill"] = now
+
+    if state["tokens"] >= 1:
+        state["tokens"] -= 1
+        return True
+
+    return False
+
+
 async def handle_cdp_post(request):
     """HTTP endpoint: send a CDP command to Chrome."""
+    if not _check_rate_limit(request):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
     try:
         body = await request.json()
     except (JSONDecodeError, ValueError):
@@ -350,7 +413,7 @@ async def handle_status(request):
     uptime = now - server_start_time
     return web.json_response(
         {
-            "version": "1.5.0",
+            "version": VERSION,
             "extension_connected": extension_ws is not None and not extension_ws.closed,
             "tab_id": tab_id,
             "extension_info": extension_info,
@@ -395,7 +458,7 @@ async def handle_events_sse(request):
         try:
             queue.put_nowait(data)
         except asyncio.QueueFull:
-            pass
+            log.warning("Event subscriber queue full — dropping event")
 
     event_subscribers.append(subscriber)
     try:
@@ -854,7 +917,7 @@ async def main():
 
     server_start_time = _now()
 
-    app = web.Application()
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/status", handle_status)
     app.router.add_get("/", handle_status)
     app.router.add_get("/cdp", handle_cdp_get)
@@ -878,7 +941,7 @@ async def main():
 
     print()
     print("  ╔═══════════════════════════════════════╗")
-    print("  ║     CDP Relay Server v2.1.0           ║")
+    print(f"  ║     CDP Relay Server v{VERSION}           ║")
     print("  ╚═══════════════════════════════════════╝")
     print()
     print(f"  Extension WS: ws://{args.host}:{args.port}/ws")
