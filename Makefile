@@ -1,4 +1,4 @@
-.PHONY: test test-python test-mcp test-ext install lint fmt fix clean node_modules
+.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean node_modules
 
 PYTEST_FLAGS = -v --tb=short
 
@@ -6,7 +6,9 @@ help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-test: test-python test-mcp test-ext  ## Run all tests
+test: test-python test-mcp test-ext  ## Run all non-E2E tests (119 tests)
+
+test-all: test test-integration  ## Run all tests including E2E (123 tests, requires Chromium)
 
 test-python:  ## Run relay server tests (excluding integration/E2E)
 	.venv/bin/python -m pytest tests/ --ignore=tests/integration $(PYTEST_FLAGS)
@@ -31,6 +33,9 @@ update-version:  ## Update version in all files (usage: make update-version VERS
 	test -n "$(VERSION)" && sed -i 's/"version": ".*"/"version": "$(VERSION)"/' extension/manifest.json
 	test -n "$(VERSION)" && sed -i 's/version: .*/version: $(VERSION)/' plugins/browser-relay/plugin.yaml
 	test -n "$(VERSION)" && sed -i 's/"version": ".*"/"version": "$(VERSION)"/' package.json
+	test -n "$(VERSION)" && sed -i 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml
+	test -n "$(VERSION)" && sed -i 's|<span>[0-9.]*</span>|<span>$(VERSION)</span>|' extension/popup.html
+	test -n "$(VERSION)" && sed -i 's/^version: .*/version: $(VERSION)/' AGENTS.md
 	test -n "$(VERSION)" && echo "Version updated to $(VERSION)" || echo "Usage: make update-version VERSION=x.y.z"
 
 fmt-js:  ## Auto-fix JS with ESLint
@@ -43,8 +48,24 @@ minify-ext:  ## Minify content-script.js using terser (via npx)
 minify-helper:  ## Regenerate hermes-helper.min.js from source
 	npx terser extension/hermes-helper.js -o extension/hermes-helper.min.js --compress --mangle --comments false
 
-fmt:  ## Format Python code with ruff
+fmt:  ## Check Python code formatting without modifying
 	ruff format --check .
+
+check-version:  ## Verify VERSION file matches all versioned files
+	@v=$$(cat VERSION); \
+	fail=0; \
+	for f in extension/manifest.json package.json plugins/browser-relay/plugin.yaml AGENTS.md; do \
+		if ! grep -q "$$v" "$$f"; then \
+			echo "❌ VERSION mismatch in $$f"; fail=1; \
+		fi; \
+	done; \
+	if ! grep -q "^version = \"$$v\"" pyproject.toml; then \
+		echo "❌ VERSION mismatch in pyproject.toml"; fail=1; \
+	fi; \
+	if ! grep -q "<span>$$v</span>" extension/popup.html; then \
+		echo "❌ VERSION mismatch in extension/popup.html"; fail=1; \
+	fi; \
+	if [ $$fail -eq 0 ]; then echo "✅ All version files match ($$v)"; fi
 
 fix:  ## Auto-fix lint issues
 	ruff check --fix .

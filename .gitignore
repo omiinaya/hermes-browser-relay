@@ -31,3 +31,5 @@ Thumbs.db
 graphify-out/
 .improvement.lock
 .coverage
+.coverage.*
+htmlcov/

@@ -11,7 +11,7 @@ python3 server.py
 # Now use: browser_navigate, browser_eval, browser_click, ...
 ```
 
-**Version 2.4.2** — **115 tests** (63 Python + 48 JS + 4 E2E), 0 failures. ESLint + ruff clean.
+**Version 2.4.2** — **123 tests** (71 Python + 48 JS + 4 E2E), 0 failures. ESLint + ruff clean.
 
 ---
 
@@ -120,12 +120,12 @@ python3 cdp.py watch
 
 | Suite | Command | Count | What it tests |
 |-------|---------|-------|---------------|
-| Relay server | `make test-python` | 39 | HTTP endpoints, WS, CDP dispatch, event capture |
+| Relay server | `make test-python` | 47 | HTTP endpoints, WS, CDP dispatch, event capture |
 | MCP server | `make test-mcp` | 24 | Tool definitions, handler dispatch, snapshots |
 | Extension | `make test-ext` | 48 | background.js, content-script, hermes-helper |
 | E2E | `make test-integration` | 4 | Real Chromium via CDP (requires chromium installed) |
 
-**115 tests, 0 failures.** Ruff lint clean, ESLint clean (source files).
+**123 tests, 0 failures** (119 via `make test`, +4 E2E with Chromium). Ruff lint clean, ESLint clean (source files).
 
 ---
 

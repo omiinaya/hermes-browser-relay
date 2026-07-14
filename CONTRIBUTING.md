@@ -15,7 +15,7 @@ make test
 
 - **Python:** ruff lint + format (configured in `pyproject.toml`). Run `make lint` before committing.
 - **JavaScript:** ESLint (flat config in `eslint.config.js`). Run `npm run lint`.
-- **Tests:** All PRs must pass `make test` (115+ tests). Add tests for new features.
+- **Tests:** All PRs must pass `make test` (119+ tests, +4 E2E with Chromium). Add tests for new features.
 
 ## Architecture Overview
 
@@ -40,7 +40,7 @@ tests/                   → pytest (relay) + node:test (extension)
 
 ## Versioning
 
-The canonical version is in `VERSION`. Before release, update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, and any hardcoded version strings in source:
+The canonical version is in `VERSION`. Before release, update `VERSION` and sync `manifest.json`, `plugin.yaml`, `package.json`, `pyproject.toml`, `extension/popup.html`, and `AGENTS.md`:
 ```bash
 make update-version VERSION=2.x.y
 ```

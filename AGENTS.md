@@ -1,5 +1,6 @@
 ---
 name: browser-relay
+version: 2.4.2
 description: "Hermes plugin for remote Chrome/Chromium browser control via CDP"
 stack: [python, javascript]
 deps: [python3, node, chromium]
