@@ -230,7 +230,7 @@ class TestHelpers:
         assert mcp._js_quote("it's") == '"it\'s"'
 
     def test_invalidate_cache(self):
-        from shared import _snapshot_cache, invalidate_cache
+        from browser_relay.shared import _snapshot_cache, invalidate_cache
 
         _snapshot_cache[("t", False)] = {"data": {}, "ts": 1000.0}
         invalidate_cache()
