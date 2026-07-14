@@ -6,8 +6,6 @@ handler dispatch, and individual handler logic with mocked CDP layer.
 
 Run:    python3 -m pytest mcp-server/tests/ -v
 """
-import json
-import os
 import sys
 import unittest.mock
 
@@ -24,8 +22,6 @@ mcp = importlib.util.module_from_spec(_spec)
 sys.modules["mcp_server_module"] = mcp
 _spec.loader.exec_module(mcp)
 
-import pytest
-from mcp.types import Tool, TextContent, ImageContent
 
 
 # =========================================================================

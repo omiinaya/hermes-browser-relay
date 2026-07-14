@@ -3,6 +3,15 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+package-lock.json
+
 # OS
 .DS_Store
 Thumbs.db
@@ -19,4 +28,3 @@ Thumbs.db
 # Graphify output
 graphify-out/
 .improvement.lock
-node_modules/

@@ -16,7 +16,6 @@ import urllib.request
 import urllib.error
 import sys as _sys
 import os as _os
-from typing import Any
 
 # Ensure project root is on sys.path for shared.py import
 _plugin_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -24,7 +23,7 @@ if _plugin_root not in _sys.path:
     _sys.path.insert(0, _plugin_root)
 
 # Import shared utilities
-from shared import (
+from shared import (  # noqa: E402
     js_quote,
     parse_result,
     cache_snapshot,
@@ -1726,7 +1725,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         v = _parse_result(cr)
                         results.append(f"Clicked '{sel}'" if isinstance(v, dict) and v.get("ok") else f"Click failed: {v}")
                     elif action == "type":
-                        sel = act["selector"]; txt = act["text"]
+                        sel = act["selector"]
+                        txt = act["text"]
                         _hermes_call("type", sel, txt)
                         results.append(f"Typed into '{sel}'")
                     elif action == "enter":
@@ -1757,7 +1757,8 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
                         fl_v = _parse_result(fl_r)
                         results.append(f"Filled '{lbl}'" if isinstance(fl_v, dict) and "error" not in fl_v else f"Fill failed: {fl_v}")
                     elif action == "scroll":
-                        d = act.get("direction", "down"); a = act.get("amount", 0)
+                        d = act.get("direction", "down")
+                        a = act.get("amount", 0)
                         _hermes_call("scrollBy", d, a)
                         results.append(f"Scrolled {d}")
                     elif action == "back":

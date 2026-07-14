@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+⚠️ DEPRECATED — Capture has been merged into server.py (the relay).
+
+This standalone capture server is kept for backward compatibility but is no
+longer maintained. The relay server at port 9223 handles all capture
+functionality internally. See CHANGELOG v1.2.0 for migration details.
+
+---
 Hermes Traffic Capture Server (v1.2.0)
 Receives browser events via WebSocket from the Chrome extension,
 writes to JSONL, and maintains an in-memory event buffer for
