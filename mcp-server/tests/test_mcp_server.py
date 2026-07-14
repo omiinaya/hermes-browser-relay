@@ -15,8 +15,11 @@ import importlib
 import pathlib
 
 # Import mcp-server/server.py without colliding with root server.py
-_mcp_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+_mcp_dir = pathlib.Path(__file__).resolve().parent.parent
+_mcp_path = _mcp_dir / "server.py"
 _spec = importlib.util.spec_from_file_location("mcp_server_module", str(_mcp_path))
+# Add the mcp-server directory to path so shared.py can be found
+sys.path.insert(0, str(_mcp_dir))
 mcp = importlib.util.module_from_spec(_spec)
 sys.modules["mcp_server_module"] = mcp
 _spec.loader.exec_module(mcp)
@@ -208,6 +211,7 @@ class TestHelpers:
         assert mcp._js_quote("it's") == '"it\'s"'
 
     def test_invalidate_cache(self):
-        mcp._snapshot_cache[("t", False)] = {"data": {}, "ts": 1000.0}
-        mcp._invalidate_cache()
-        assert len(mcp._snapshot_cache) == 0
+        from shared import _snapshot_cache, invalidate_cache
+        _snapshot_cache[("t", False)] = {"data": {}, "ts": 1000.0}
+        invalidate_cache()
+        assert len(_snapshot_cache) == 0

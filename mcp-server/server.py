@@ -16,6 +16,11 @@ import urllib.request
 import urllib.error
 from typing import Any
 
+# Ensure the project root is on sys.path for shared.py import
+_shared_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _shared_dir not in __import__('sys').path:
+    __import__('sys').path.insert(0, _shared_dir)
+
 from PIL import Image, ImageDraw, ImageFont
 
 import websockets.sync.client
@@ -24,24 +29,25 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, ImageContent
 
+# Import shared utilities (snapshot cache, JS quoting, result parsing)
+from shared import (
+    js_quote,
+    parse_result,
+    cache_snapshot,
+    get_cached_snapshot,
+    invalidate_cache,
+    INTERACTIVE_SELECTORS,
+)
+# Module-level aliases for backward compat with handler code
+_js_quote = js_quote
+_parse_result = parse_result
+_cache_snapshot = cache_snapshot
+_get_cached_snapshot = get_cached_snapshot
+_invalidate_cache = invalidate_cache
+_INTERACTIVE_SELECTORS = INTERACTIVE_SELECTORS
+
+
 # ---------------------------------------------------------------------------
-# Interactive element CSS selectors for snapshot
-# ---------------------------------------------------------------------------
-_INTERACTIVE_SELECTORS = [
-    "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
-    "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]",
-    "[role=tab]", "[role=menuitem]", "[role=option]", "[tabindex]:not([tabindex='-1'])",
-    "summary", "details", "[contenteditable=true]",
-]
-
-
-def _js_quote(s: str) -> str:
-    """JSON-encode a string for safe JS interpolation."""
-    return json.dumps(s)
-
-
-# ---------------------------------------------------------------------------
-# __hermes helper integration
 # ---------------------------------------------------------------------------
 
 def _hermes_call(func_name: str, *args, fallback: str = None, tab_id: int = None) -> dict:
@@ -83,40 +89,6 @@ def _hermes_call(func_name: str, *args, fallback: str = None, tab_id: int = None
         pass
     
     return result
-
-
-# ---------------------------------------------------------------------------
-# Snapshot cache — removes redundant DOM walks within 2s TTL
-# ---------------------------------------------------------------------------
-
-_snapshot_cache = {}  # key: (tab_id or 0, full) -> {"data": dict, "ts": float}
-_last_nav_time = 0.0  # time of last navigation — cache is invalidated after
-
-
-def _cache_snapshot(tab_id, full, data):
-    """Cache a snapshot result with current timestamp."""
-    if not data or isinstance(data, dict) and "error" in data:
-        return
-    global _last_nav_time
-    now = time.time()
-    if now - _last_nav_time < 0.5:
-        return  # Don't cache during navigation
-    _snapshot_cache[(tab_id or 0, full)] = {"data": data, "ts": now}
-
-
-def _get_cached_snapshot(tab_id, full):
-    """Return cached snapshot if fresh (< 2s), else None."""
-    entry = _snapshot_cache.get((tab_id or 0, full))
-    if entry and time.time() - entry["ts"] < 2.0:
-        return entry["data"]
-    return None
-
-
-def _invalidate_cache():
-    """Clear all snapshot caches — call after navigation."""
-    global _last_nav_time
-    _snapshot_cache.clear()
-    _last_nav_time = time.time()
 
 
 def _hermes_check() -> bool:
@@ -278,22 +250,7 @@ def _cdp_async(method: str, params: dict | None = None, timeout: int = CDP_TIMEO
         with _cdp_opener.open(req, timeout=timeout + 5) as resp:
             return json.loads(resp.read().decode())
     except Exception:
-        return {}
-
-
-def _parse_result(result: dict) -> Any:
-    """Extract the actual return value from a CDP response."""
-    if "error" in result:
-        return result
-    if "result" in result and "result" in result["result"]:
-        val = result["result"]["result"].get("value")
-        if val is not None:
-            return val
-        exc = result["result"].get("exceptionDetails")
-        if exc:
-            return {"error": f"JS exception: {exc.get('text', str(exc))}"}
-        return result["result"]["result"]
-    return result.get("result", result)
+        return None
 
 
 def _query_capture(path: str, timeout: int = 5) -> dict:

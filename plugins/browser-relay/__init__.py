@@ -14,7 +14,29 @@ import time
 import base64
 import urllib.request
 import urllib.error
+import sys as _sys
+import os as _os
 from typing import Any
+
+# Ensure project root is on sys.path for shared.py import
+_plugin_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _plugin_root not in _sys.path:
+    _sys.path.insert(0, _plugin_root)
+
+# Import shared utilities
+from shared import (
+    js_quote,
+    parse_result,
+    cache_snapshot,
+    get_cached_snapshot,
+    invalidate_cache,
+)
+# Keep backward-compatible aliases for existing code
+_js_quote = js_quote
+_parse_result = parse_result
+_cache_snapshot = cache_snapshot
+_get_cached_snapshot = get_cached_snapshot
+_invalidate_cache = invalidate_cache
 
 try:
     from agent.memory_provider import MemoryProvider
@@ -35,11 +57,6 @@ def _set_tab(arguments: dict | None) -> None:
     """Extract optional tab_id from tool arguments for tab-targeted CDP routing."""
     global _shared_tab_id
     _shared_tab_id = arguments.get("tab_id") if arguments else None
-
-
-def _js_quote(s: str) -> str:
-    """JSON-encode a string for safe JS interpolation."""
-    return json.dumps(s)
 
 
 def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
@@ -97,53 +114,6 @@ def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, *
         return {"error": str(e)}
 
 
-def _parse_result(result: dict) -> Any:
-    """Extract the return value from a CDP response."""
-    if "error" in result:
-        return result
-    if "result" in result and "result" in result["result"]:
-        val = result["result"]["result"].get("value")
-        if val is not None:
-            return val
-        exc = result["result"].get("exceptionDetails")
-        if exc:
-            return {"error": f"JS exception: {exc.get('text', str(exc))}"}
-        return result["result"]["result"]
-    return result.get("result", result)
-
-
-# ---------------------------------------------------------------------------
-# Snapshot Cache (2-second TTL)
-# ---------------------------------------------------------------------------
-
-_snapshot_cache: dict[tuple, Any] = {}
-_last_cache_ts: dict[tuple, float] = {}
-_SNAPSHOT_TTL = 2.0
-
-
-def _get_cached_snapshot(tab_id: int | None, full: bool) -> Any | None:
-    """Return cached snapshot if fresh, or None on miss/stale."""
-    key = (tab_id or 0, full)
-    ts = _last_cache_ts.get(key)
-    if ts is not None and time.time() - ts < _SNAPSHOT_TTL:
-        return _snapshot_cache.get(key)
-    return None
-
-
-def _cache_snapshot(tab_id: int | None, full: bool, data: Any) -> None:
-    """Store a snapshot in the cache."""
-    key = (tab_id or 0, full)
-    _snapshot_cache[key] = data
-    _last_cache_ts[key] = time.time()
-
-
-def _invalidate_cache() -> None:
-    """Clear all cached snapshots."""
-    _snapshot_cache.clear()
-    _last_cache_ts.clear()
-
-
-# ---------------------------------------------------------------------------
 # Tool Schemas (OpenAI format)
 # ---------------------------------------------------------------------------
 
@@ -183,7 +153,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click an element by CSS selector.",
+        "description": "Click an element by CSS selector. Uses content script fast path — finds coordinates and dispatches mouse events in one shot.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -194,7 +164,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field (clicks it first, clears it, then types).",
+        "description": "Type text into an input field. Selects the field first, clears it (Ctrl+A, Delete), then inserts text via content script fast path.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -242,7 +212,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get an accessibility-style snapshot of the current page. Returns compact info for all interactive elements (links, buttons, inputs) with coordinates so you can interact. Faster than taking a screenshot.",
+        "description": "Get an accessibility-style snapshot of the current page. Returns compact info for all interactive elements (links, buttons, inputs) with coordinates so you can interact. Uses content script fast path. Auto-cached for 2s — repeat calls within that window are instant.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -621,7 +591,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_do",
-        "description": "Execute multiple browser actions sequentially in ONE tool call. Supported: navigate, click, type, snapshot, wait_selector, eval, scroll, enter, back, get_text, wait.",
+        "description": "Execute multiple browser actions sequentially in ONE tool call. Eliminates LLM thinking time between steps. Supported actions: navigate, navigate_wait (navigate + auto-ready + optional element wait), click, click_text, hover, type, enter, key, scroll, snapshot, screenshot, get_text, fill_by_label, wait_selector, back, forward, eval, wait.",
         "parameters": {
             "type": "object",
             "properties": {

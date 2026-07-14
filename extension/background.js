@@ -516,16 +516,21 @@ let _csGraceSet = new Set(); // Set<tabId> that had CS but might have navigated;
 async function routeToContentScript(tabId, msg) {
   const id = msg.id;
   try {
-    const response = await chrome.tabs.sendMessage(tabId, {
-      type: 'hermes',
-      func: msg._hermesFunc || msg.params?._hermesFunc,
-      args: msg._hermesArgs || msg.params?._hermesArgs,
-    });
+    // Proactive CS health check: wrap sendMessage with a short timeout
+    // If CS doesn't respond within 150ms, skip the 80ms retry and go straight to CDP
+    const response = await Promise.race([
+      chrome.tabs.sendMessage(tabId, {
+        type: 'hermes',
+        func: msg._hermesFunc || msg.params?._hermesFunc,
+        args: msg._hermesArgs || msg.params?._hermesArgs,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('CS health check timed out')), 150)
+      ),
+    ]);
     _csTabs.add(tabId);
     _csGraceSet.delete(tabId);
     if (response && response.ok) {
-      // Content script returns { ok: true, result: <value> }
-      // Wrap result to look like CDP Runtime.evaluate return
       safeSend({
         id: id,
         result: {
@@ -539,30 +544,11 @@ async function routeToContentScript(tabId, msg) {
       });
     }
   } catch (e) {
-    // Content script not available (page not loaded, navigation in progress, etc.)
-    // Smart retry: wait 80ms and try once more — CS is usually injected by then
-    try {
-      await new Promise(resolve => setTimeout(resolve, 80));
-      const retryResponse = await chrome.tabs.sendMessage(tabId, {
-        type: 'hermes',
-        func: msg._hermesFunc || msg.params?._hermesFunc,
-        args: msg._hermesArgs || msg.params?._hermesArgs,
-      });
-      if (retryResponse && retryResponse.ok) {
-        _csTabs.add(tabId);
-        _csGraceSet.delete(tabId);
-        safeSend({
-          id: id,
-          result: { result: { type: 'object', value: retryResponse.result } },
-        });
-        return;
-      }
-    } catch (_) {
-      // Retry also failed — fall through to CDP fallback
-    }
+    // CS unavailable (navigating, not injected yet, or timeout)
+    // Skip retry — proactive check already determined CS isn't responding
+    // The MCP server's _hermes_call has its own 80ms smart retry
     _csTabs.delete(tabId);
-    _csGraceSet.add(tabId);  // Try once more on next call before falling back to CDP
-    // Signal fallback: return a specific error that MCP server can detect
+    _csGraceSet.add(tabId);
     safeSend({
       id: id,
       error: { code: -32999, message: 'Content script unavailable', _fallback: true },
