@@ -2467,8 +2467,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
 def main():
     import asyncio
+    import sys
 
-    _ensure_relay()
+    relay_err = _ensure_relay()
+    if relay_err:
+        print(f"Warning: CDP relay may not be available: {relay_err}", file=sys.stderr)
     start_watchdog()
 
     async def run():

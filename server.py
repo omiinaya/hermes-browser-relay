@@ -914,7 +914,11 @@ async def main():
     parser.add_argument("--port", type=int, default=9223, help="Server port (default: 9223)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--version", action="version", version=f"browser-relay-server {VERSION}")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Logging level (default: INFO)")
     args = parser.parse_args()
+
+    logging.getLogger("cdp-relay").setLevel(getattr(logging, args.log_level.upper()))
 
     server_start_time = _now()
 

@@ -451,3 +451,49 @@ class TestHandlerStructure:
         for name in self.HANDLER_NAMES:
             assert hasattr(relay, name), f"Missing handler: {name}"
             assert callable(getattr(relay, name)), f"Handler not callable: {name}"
+
+
+class TestErrorHandling:
+    """Tests for HTTP status code inference and error handling logic."""
+
+    def test_http_status_extension_not_connected(self):
+        assert relay._http_status_for_error("Extension not connected - timeout") == 503
+
+    def test_http_status_missing(self):
+        assert relay._http_status_for_error("Missing 'method'") == 400
+
+    def test_http_status_failed_to_send(self):
+        assert relay._http_status_for_error("Failed to send CDP command") == 502
+
+    def test_http_status_timed_out(self):
+        assert relay._http_status_for_error("CDP command timed out after 60s") == 504
+
+    def test_http_status_generic(self):
+        assert relay._http_status_for_error("Something else") == 400
+        assert relay._http_status_for_error("") == 400
+
+
+class TestCDPCore:
+    """Tests for core CDP execution logic (no WS needed)."""
+
+    def test_execute_cdp_raw_no_extension(self):
+        """_execute_cdp_raw should return error when no extension is connected."""
+        import asyncio
+        result = asyncio.run(relay._execute_cdp_raw({"method": "Page.navigate", "params": {"url": "about:blank"}}))
+        assert "error" in result
+        assert "not connected" in result["error"].lower()
+
+    def test_execute_cdp_raw_no_method(self):
+        """_execute_cdp_raw should check method param (extension check is first)."""
+        import asyncio
+        result = asyncio.run(relay._execute_cdp_raw({}))
+        assert "error" in result
+
+    def test_process_cdp_command_passthrough(self):
+        """_process_cdp_command wraps error results correctly."""
+        import asyncio
+        from aiohttp import web
+        # Without extension, all commands get 503
+        result = asyncio.run(relay._process_cdp_command({"method": "Page.navigate"}))
+        assert isinstance(result, web.Response)
+        assert result.status == 503 or result.status == 400
