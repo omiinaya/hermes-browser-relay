@@ -86,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Bind button clicks
     tabList.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', (_e) => {
         const action = btn.dataset.action;
         const tabId = parseInt(btn.dataset.tabId);
         btn.disabled = true;

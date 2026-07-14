@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.4.0 (2026-07-13)
+
+### Fixed
+- **`make lint` was broken** — called `truff` (typo) instead of `ruff`.
+- **`make test-ext` only ran 28/48 tests** — now runs all 3 test files (hermes-helper, background, content-script) with `--test-force-exit` to prevent hanging on timer handles. Auto-installs `node_modules` if missing.
+- **`make test-mcp` broken in local dev** — used system `python3` (resolved to wrong venv without Pillow) instead of `.venv/bin/python`. Now consistent with `test-python`.
+- **content-script.js had no source file** — the 6KB original was overwritten by terser in-place. Restored as `extension/content-script.src.js` so the unminified source is editable.
+
+### Added
+- **`VERSION` file** — single source of truth at `2.3.1`. All versioned files now match: `manifest.json` (ext → 2.3.1), `plugin.yaml` (1.3.0 → 2.3.1), `package.json` (1.0.0 → 2.3.1).
+- **ESLint config** (`eslint.config.js`) — JS linting for extension and test files with `caughtErrors: none`. Covers 8 source files. Source files produce 0 warnings; test files produce 21 (mocks/unused destructuring, accepted).
+- **`.pre-commit-config.yaml`** — ruff check + ruff-format on every commit.
+- **`.github/dependabot.yml`** — weekly updates for pip, npm, and GitHub Actions deps.
+- **`make install` target** — single command to install all Python + Node deps.
+
+### Changed
+- **`capture_server.py` archived** — moved from project root to `archive/`. The relay server (`server.py`) has handled capture since v1.2.0.
+- **ESLint `no-unused-vars`**: disabled for catch param bindings (`caughtErrors: none`) — standard practice for silent catch blocks with inline comments.
+
 ## v2.3.1 (2026-07-13)
 
 ### Added

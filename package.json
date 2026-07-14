@@ -1,13 +1,17 @@
 {
   "name": "browser-relay-extension-tests",
-  "version": "1.0.0",
+  "version": "2.3.1",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test --test-force-exit tests/extensions/*.test.js",
-    "test:watch": "node --test --watch tests/extensions/*.test.js"
+    "test:watch": "node --test --watch tests/extensions/*.test.js",
+    "lint": "eslint tests/extensions/ extension/ --max-warnings=25"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0",
     "jsdom": "^29.1.1"
   }
 }

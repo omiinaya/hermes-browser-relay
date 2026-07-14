@@ -29,7 +29,7 @@
   // Shadow DOM recursive query
   function shadowQueryAll(root, sel) {
     let r = [];
-    try { r = Array.from(root.querySelectorAll(sel)); } catch(e) {}
+    try { r = Array.from(root.querySelectorAll(sel)); } catch(e) { /* shadow root may not support querySelectorAll */ }
     if (root.shadowRoot) r = r.concat(shadowQueryAll(root.shadowRoot, sel));
     for (const c of root.children || []) r = r.concat(shadowQueryAll(c, sel));
     return r;
@@ -574,7 +574,7 @@
       try {
         var r = el.getBoundingClientRect();
         if (r.width > 0 && r.height > 0 && r.top < wh && r.bottom > 0) visible++;
-      } catch (e) {}
+      } catch(e) { /* detached element, skip */ }
     }
     return {
       total: total,
