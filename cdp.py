@@ -67,7 +67,7 @@ import urllib.request
 import urllib.error
 
 _VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
-VERSION = open(_VERSION_FILE).read().strip() if os.path.exists(_VERSION_FILE) else "2.0.0"
+VERSION = open(_VERSION_FILE).read().strip() if os.path.exists(_VERSION_FILE) else "0.0.0"
 SERVER = "http://127.0.0.1:9223"
 
 
@@ -1076,9 +1076,9 @@ def main():
     if _relay_err:
         print(f"Warning: {_relay_err}", file=sys.stderr)
 
-    parser = argparse.ArgumentParser(description="CDP Client — control Chrome via CDP relay")
-    SERVER_DEFAULT = SERVER
-    parser.add_argument("--server", default=None, help=f"CDP relay server (default: {SERVER_DEFAULT})")
+    parser = argparse.ArgumentParser(description="CDP Client — Send CDP commands to Chrome via the relay server")
+    parser.add_argument("--version", action="version", version=f"browser-relay {VERSION}")
+    parser.add_argument("--server", default=None, help=f"CDP relay server (default: {SERVER})")
 
     sub = parser.add_subparsers(dest="command")
 

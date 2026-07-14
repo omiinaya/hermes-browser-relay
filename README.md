@@ -11,7 +11,7 @@ python3 server.py
 # Now use: browser_navigate, browser_eval, browser_click, ...
 ```
 
-**Version 2.4.0** — **115 tests** (63 Python + 48 JS + 4 E2E), 0 failures. ESLint + ruff clean.
+**Version 2.4.2** — **115 tests** (63 Python + 48 JS + 4 E2E), 0 failures. ESLint + ruff clean.
 
 ---
 

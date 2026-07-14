@@ -40,6 +40,9 @@ minify-ext:  ## Minify content-script.js using terser (via npx)
 	npx terser extension/content-script.js -o extension/content-script.js --compress --mangle --comments false 2>/dev/null || \
 	  echo "Note: content-script.js is maintained in minified form; terser is optional."
 
+minify-helper:  ## Regenerate hermes-helper.min.js from source
+	npx terser extension/hermes-helper.js -o extension/hermes-helper.min.js --compress --mangle --comments false
+
 fmt:  ## Format Python code with ruff
 	ruff format --check .
 
