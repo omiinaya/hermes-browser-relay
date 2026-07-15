@@ -114,7 +114,7 @@ def _ensure_relay() -> str | None:
 
     # First check if relay is already running
     try:
-        req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+        req = urllib.request.Request(CDP_SERVER + "/status", method="GET")
         with urllib.request.urlopen(req, timeout=3) as _resp:
             if _resp.status == 200:
                 return None
@@ -146,7 +146,7 @@ def _ensure_relay() -> str | None:
         import time as _t
         _t.sleep(0.3)
         try:
-            req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+            req = urllib.request.Request(CDP_SERVER + "/status", method="GET")
             with urllib.request.urlopen(req, timeout=2) as _resp:
                 if _resp.status == 200:
                     return None
@@ -2466,12 +2466,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageConte
 
 
 def main():
+    import argparse
     import asyncio
     import sys
+    from pathlib import Path
+
+    # Read version from VERSION file (same directory as mcp-server/server.py)
+    _ver_file = Path(__file__).parent.parent / "VERSION"
+    _version = _ver_file.read_text().strip() if _ver_file.exists() else "unknown"
+
+    parser = argparse.ArgumentParser(description="browser-relay MCP server")
+    parser.add_argument("--version", action="version", version=f"browser-relay-mcp {_version}")
+    # Parse known args only — MCP stdio passes its own args via pipe
+    parser.parse_known_args(sys.argv[1:])
 
     relay_err = _ensure_relay()
     if relay_err:
         print(f"Warning: CDP relay may not be available: {relay_err}", file=sys.stderr)
+    print(f"browser-relay-mcp {_version} — stdio server ready", file=sys.stderr)
     start_watchdog()
 
     async def run():

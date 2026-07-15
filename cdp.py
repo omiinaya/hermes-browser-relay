@@ -1029,7 +1029,7 @@ def _ensure_relay() -> str | None:
 
     # First check if relay is already running
     try:
-        req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+        req = urllib.request.Request(SERVER + "/status", method="GET")
         with urllib.request.urlopen(req, timeout=3) as _resp:
             if _resp.status == 200:
                 return None
@@ -1061,7 +1061,7 @@ def _ensure_relay() -> str | None:
         import time as _t
         _t.sleep(0.3)
         try:
-            req = urllib.request.Request("http://127.0.0.1:9223/status", method="GET")
+            req = urllib.request.Request(SERVER + "/status", method="GET")
             with urllib.request.urlopen(req, timeout=2) as _resp:
                 if _resp.status == 200:
                     return None

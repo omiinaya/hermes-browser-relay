@@ -2089,7 +2089,13 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
-            s.connect(("127.0.0.1", 9223))
+            # Parse host/port from CDP_SERVER env var, fallback to 127.0.0.1:9223
+            _url = CDP_SERVER.replace("http://", "").replace("https://", "")
+            if ":" in _url:
+                _host, _port = _url.split(":", 1)
+            else:
+                _host, _port = "127.0.0.1", "9223"
+            s.connect((_host, int(_port)))
             s.close()
             return True
         except Exception:

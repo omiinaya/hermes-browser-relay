@@ -108,11 +108,22 @@ python3 cdp.py watch
 | `/cdp` | GET | Quick command via query params `?method=Page.navigate&url=...` |
 | `/cdp/{tabId}` | POST | Send CDP command to a specific tab |
 | `/status` | GET | Connection health, attached tab, uptime |
+| `/stats` | GET | Same as `/status` |
 | `/events` | GET | Server-Sent Events stream |
 | `/ws` | WS | WebSocket for the Chrome extension |
-| `/recent` | GET | Recent captured events |
-| `/tabs` | GET/POST | Tab lifecycle management |
-| `/block/patterns` | GET/POST | URL blocking (declarativeNetRequest) |
+| `/mcp-ws` | WS | Persistent WebSocket for MCP clients (no HTTP overhead) |
+| `/wait-nav` | GET | Long-poll waiting for page navigation (see `?since=` param) |
+| `/recent` | GET | Recent captured events (query: `?limit=20&mode=nav`) |
+| `/tabs` | GET | List all open browser tabs |
+| `/tabs` | POST | Create a new tab |
+| `/tabs/switch` | POST | Switch to a tab by ID |
+| `/tabs/attach` | POST | Attach debugger to a tab |
+| `/tabs/detach` | POST | Detach debugger from a tab |
+| `/tabs/attachments` | GET | List currently attached tabs |
+| `/tabs/create` | POST | Create a new blank tab |
+| `/tabs/close` | POST | Close a tab by ID |
+| `/block/patterns` | GET | Get current URL block patterns |
+| `/block/patterns` | POST | Update URL block patterns |
 
 ---
 
