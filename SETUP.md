@@ -60,6 +60,8 @@ make test-integration  # E2E tests (4, requires Chromium)
 make lint           # ruff check
 npm run lint        # ESLint
 make lint-all       # Both
+make docker-build   # Build Docker image
+make docker-run     # Run container on port 9223
 
 ### Pre-commit Hooks
 

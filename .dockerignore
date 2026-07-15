@@ -1,0 +1,45 @@
+# Git
+.git/
+.gitattributes
+.gitignore
+.githooks/
+.gitmessage
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+
+# Tests & coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Runtime
+*.log
+.env
+*.env.local
+
+# Archive
+archive/
+
+# Graphify
+graphify-out/
+.improvement.lock
+
+# Build artifacts
+dist/
+*.whl

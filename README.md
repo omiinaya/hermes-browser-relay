@@ -1,5 +1,12 @@
 # browser-relay — Hermes Plugin for Remote Browser Control
 
+[![Tests](https://github.com/omiinaya/browser-relay/actions/workflows/test.yml/badge.svg)](https://github.com/omiinaya/browser-relay/actions)
+[![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-123%20passing-success)](https://github.com/omiinaya/browser-relay/actions)
+[![Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
+
 A **Hermes plugin** that gives your AI agent full control of Chrome/Chromium — navigate, click, type, scrape, screenshot, fill forms, and manage tabs. All through a CDP relay server + companion Chrome extension.
 
 ```bash
@@ -35,6 +42,8 @@ hermes plugins install .
 ```
 
 > **Tip:** The plugin auto-starts the relay server on first tool call if it's not already running. You just need the Chrome extension loaded.
+
+> **Containerized:** A [Dockerfile](Dockerfile) is provided for running the relay server in a container (see [Using Docker](#using-docker)).
 
 ## Architecture
 
@@ -96,6 +105,25 @@ python3 cdp.py type "#search" "hello world"
 python3 cdp.py screenshot
 python3 cdp.py send Network.getCookies '{}'
 python3 cdp.py watch
+```
+
+---
+
+## Docker
+
+Run the relay server in a container:
+
+```bash
+docker build -t browser-relay .
+docker run -d -p 9223:9223 --name browser-relay browser-relay
+```
+
+This exposes the relay on `http://localhost:9223`. The container includes a health check and supports the same `--host`/`--port`/`--log-level` flags as `server.py`.
+
+To use with a Chrome instance running on the host, pass `--network=host`:
+
+```bash
+docker run -d --network=host --name browser-relay browser-relay
 ```
 
 ---

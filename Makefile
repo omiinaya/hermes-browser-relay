@@ -1,4 +1,4 @@
-.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean node_modules
+.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean check-version node_modules docker-build docker-run docker-stop
 
 PYTEST_FLAGS = -v --tb=short
 
@@ -72,7 +72,16 @@ fix:  ## Auto-fix lint issues
 	ruff format .
 
 clean:  ## Clean build artifacts
-	rm -rf node_modules dist target __pycache__ .pytest_cache .ruff_cache
+	rm -rf node_modules dist target __pycache__ .pytest_cache .ruff_cache .coverage .coverage.* htmlcov/
+
+docker-build:  ## Build Docker image
+	docker build -t browser-relay .
+
+docker-run:  ## Run Docker container (port 9223)
+	docker run -d -p 9223:9223 --name browser-relay browser-relay
+
+docker-stop:  ## Stop Docker container
+	docker stop browser-relay 2>/dev/null; docker rm browser-relay 2>/dev/null; true
 
 install:  ## Install all dependencies
 	.venv/bin/pip install -e ".[dev]" 2>/dev/null || \
