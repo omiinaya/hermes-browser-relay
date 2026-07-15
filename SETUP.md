@@ -62,6 +62,8 @@ npm run lint        # ESLint
 make lint-all       # Both
 make docker-build   # Build Docker image
 make docker-run     # Run container on port 9223
+make docs-build     # Build Docusaurus documentation site
+make docs-serve     # Serve docs locally (port 3000)
 
 ### Pre-commit Hooks
 

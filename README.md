@@ -6,6 +6,7 @@
 [![Tests](https://img.shields.io/badge/tests-123%20passing-success)](https://github.com/omiinaya/browser-relay/actions)
 [![Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
+[![Docs](https://img.shields.io/badge/docs-Docusaurus-3fc3f7?logo=docusaurus&logoColor=white)](https://omiinaya.github.io/browser-relay/)
 
 A **Hermes plugin** that gives your AI agent full control of Chrome/Chromium — navigate, click, type, scrape, screenshot, fill forms, and manage tabs. All through a CDP relay server + companion Chrome extension.
 
@@ -44,6 +45,8 @@ hermes plugins install .
 > **Tip:** The plugin auto-starts the relay server on first tool call if it's not already running. You just need the Chrome extension loaded.
 
 > **Containerized:** A [Dockerfile](Dockerfile) is provided for running the relay server in a container (see [Using Docker](#using-docker)).
+>
+> **📚 Docusaurus docs:** Full documentation at [omiinaya.github.io/browser-relay/](https://omiinaya.github.io/browser-relay/).
 
 ## Architecture
 

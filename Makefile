@@ -1,4 +1,4 @@
-.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean check-version node_modules docker-build docker-run docker-stop
+.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean check-version node_modules docker-build docker-run docker-stop docs-build docs-serve
 
 PYTEST_FLAGS = -v --tb=short
 
@@ -82,6 +82,15 @@ docker-run:  ## Run Docker container (port 9223)
 
 docker-stop:  ## Stop Docker container
 	docker stop browser-relay 2>/dev/null; docker rm browser-relay 2>/dev/null; true
+
+docs-build:  ## Build Docusaurus documentation site
+	cd website && npm run build
+
+docs-serve:  ## Serve built documentation locally (port 3000)
+	cd website && npm run serve
+
+docs-dev:  ## Start Docusaurus dev server with hot reload (port 3000)
+	cd website && npm run start
 
 install:  ## Install all dependencies
 	.venv/bin/pip install -e ".[dev]" 2>/dev/null || \
