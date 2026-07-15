@@ -15,7 +15,7 @@ WORKDIR /app
 # Install runtime dependencies
 COPY --from=builder /app/dist/*.whl .
 RUN pip install --no-cache-dir *.whl && rm *.whl
-RUN pip install --no-cache-dir aiohttp websockets Pillow
+RUN pip install --no-cache-dir --no-build-isolation aiohttp websockets Pillow mcp
 
 # Copy extension files (served as static resources for the relay)
 COPY extension/ ./extension/

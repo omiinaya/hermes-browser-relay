@@ -8,7 +8,7 @@ readme = "README.md"
 authors = [
     { name = "omiinaya", email = "omiinaya@gmail.com" },
 ]
-keywords = ["chrome", "cdp", "hermes", "browser-automation", "mcp"]
+keywords = ["chrome", "cdp", "hermes", "browser-automation", "mcp", "devtools", "chrome-extension", "web-scraping"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -28,7 +28,7 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 [project.urls]
-Homepage = "https://github.com/omiinaya/browser-relay"
+Homepage = "https://omiinaya.github.io/browser-relay"
 Repository = "https://github.com/omiinaya/browser-relay"
 
 [project.optional-dependencies]

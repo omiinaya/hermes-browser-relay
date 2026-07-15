@@ -93,6 +93,7 @@ docs-dev:  ## Start Docusaurus dev server with hot reload (port 3000)
 	cd website && npm run start
 
 install:  ## Install all dependencies
+	test -d .venv || python3 -m venv .venv
 	.venv/bin/pip install -e ".[dev]" 2>/dev/null || \
 	  .venv/bin/pip install aiohttp websockets Pillow 'mcp>=1.0.0'
 	npm install

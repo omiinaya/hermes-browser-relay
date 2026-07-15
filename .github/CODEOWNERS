@@ -1,0 +1,16 @@
+# Code owners — these users/groups are automatically requested for review
+# when changes are made to their respective paths.
+
+* @omiinaya
+
+# Docs site
+/website/ @omiinaya
+
+# CI/CD
+/.github/ @omiinaya
+
+# Extension
+/extension/ @omiinaya
+
+# Python source
+*.py @omiinaya

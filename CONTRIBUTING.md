@@ -16,6 +16,8 @@ make test
 - **Python:** ruff lint + format (configured in `pyproject.toml`). Run `make lint` before committing.
 - **JavaScript:** ESLint (flat config in `eslint.config.js`). Run `npm run lint`.
 - **Tests:** All PRs must pass `make test` (119+ tests, +4 E2E with Chromium). Add tests for new features.
+- **Docs:** Update the Docusaurus documentation site (`website/docs/`) when adding or changing features. Build with `make docs-build` to verify.
+- **Tool table:** Keep `README.md` and `website/docs/tools.md` in sync when adding/removing tools.
 
 ## Architecture Overview
 

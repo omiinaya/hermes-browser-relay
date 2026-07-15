@@ -1,0 +1,18 @@
+# See https://pre-commit.com for more information
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.0.0
+    hooks:
+      - id: eslint
+        files: \.(js|mjs|cjs)$
+        types: [file]
+        additional_dependencies:
+          - eslint@^9.0.0
+          - '@eslint/js@^9.0.0'
+          - globals@^15.0.0
