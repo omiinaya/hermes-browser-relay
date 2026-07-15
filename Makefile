@@ -1,4 +1,4 @@
-.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean check-version node_modules docker-build docker-run docker-stop docs-build docs-serve
+.PHONY: test test-python test-mcp test-ext test-all install lint fmt fix clean check-version node_modules docker-build docker-run docker-stop docs-build docs-serve minify-ext minify-helper minify-from-source
 
 PYTEST_FLAGS = -v --tb=short
 
@@ -48,6 +48,9 @@ minify-ext:  ## Minify content-script.js using terser (via npx)
 minify-helper:  ## Regenerate hermes-helper.min.js from source
 	npx terser extension/hermes-helper.js -o extension/hermes-helper.min.js --compress --mangle --comments false
 
+minify-from-source:  ## Regenerate content-script.js from content-script.src.js
+	npx terser extension/content-script.src.js -o extension/content-script.js --compress --mangle --comments false
+
 fmt:  ## Check Python code formatting without modifying
 	ruff format --check .
 
@@ -72,7 +75,7 @@ fix:  ## Auto-fix lint issues
 	ruff format .
 
 clean:  ## Clean build artifacts
-	rm -rf node_modules dist target __pycache__ .pytest_cache .ruff_cache .coverage .coverage.* htmlcov/
+	rm -rf node_modules dist target __pycache__ .pytest_cache .ruff_cache .coverage .coverage.* htmlcov/ website/build/ website/.docusaurus/ website/.cache-loader/
 
 docker-build:  ## Build Docker image
 	docker build -t browser-relay .

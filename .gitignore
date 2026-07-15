@@ -27,7 +27,10 @@ Thumbs.db
 !.vscode/settings.json
 .idea/
 
-# Graphify output
+# Build artifacts
+website/build/
+.docusaurus
+.cache-loader
 graphify-out/
 .improvement.lock
 .coverage

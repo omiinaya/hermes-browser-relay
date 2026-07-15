@@ -57,6 +57,20 @@ line-length = 160
 quote-style = "double"
 indent-style = "space"
 
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+exclude = [
+    "tests/",
+    "archive/",
+    "website/",
+    "node_modules/",
+]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests", "mcp-server/tests"]

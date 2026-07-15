@@ -1,0 +1,18 @@
+include README.md
+include LICENSE
+include VERSION
+include AGENTS.md
+include Dockerfile
+include Makefile
+recursive-include extension *.js *.json *.html *.png
+recursive-include plugins/browser-relay *.py *.yaml
+recursive-include mcp-server *.py
+recursive-include browser_relay *.py
+recursive-include website/docs *.md
+recursive-include website/src *.tsx *.ts *.css
+recursive-include website/static/img *.png
+prune tests
+prune website/build
+prune website/node_modules
+prune archive
+prune .github

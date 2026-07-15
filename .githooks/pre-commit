@@ -6,6 +6,11 @@ if [ -f Makefile ]; then
   make lint || exit 1
 fi
 
+# Lint JavaScript (if ESLint is available)
+if [ -f package.json ]; then
+  make lint-js 2>/dev/null || echo "  ⚠️  ESLint not available — skipping JS lint"
+fi
+
 # Check VERSION file matches all versioned files
 make check-version || exit 1
 
