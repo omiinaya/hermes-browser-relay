@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.5.0 (2026-08-04)
+
+- **Performance overhaul** — content script uses `getStateSnapshot()` (~10x cheaper) for push events instead of the full DOM walk; real 250ms trailing debounce on MutationObserver
+- **Client-side event batching** — CDP + webRequest events flush as one `type:"batch"` WS message every 100ms
+- **CDP event whitelist** — only 12 interesting methods forwarded; per-request noise dropped at the source
+- **Batched capture writes** — relay flushes `capture.jsonl` every 1s / 200 events instead of per-event open+stat
+- **Plugin persistent WS** — Hermes plugin now uses `/mcp-ws` with circuit breaker + HTTP fallback (was HTTP POST per call)
+- **Header whitelist** — security-relevant headers only (was 30 arbitrary per request); dropped unused `requestBody` capture
+- **Bug fix** — relay now forwards `tabId` so multi-tab targeting works
+- **Bug fix** — `make lint-js` no longer scans build artifacts (232 errors eliminated)
+- **139 tests** — 80 Python + 55 JS + 4 E2E, 0 failures
+
 ## v2.4.2 (2026-07-14)
 
 - **8 polish passes** — 80+ improvements across code quality, testing, documentation, and tooling
