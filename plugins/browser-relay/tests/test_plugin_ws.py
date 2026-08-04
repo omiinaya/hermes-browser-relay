@@ -38,7 +38,7 @@ def plugin():
 class TestWsCircuitBreaker:
     def test_ws_skipped_when_library_missing(self, plugin):
         plugin._ws_sync = None
-        assert plugin._ensure_plugin_ws() is False
+        assert plugin._ensure_plugin_ws_locked() is False
         assert plugin._cdp_via_ws({"method": "Page.navigate"}) is None
 
     def test_circuit_opens_after_threshold_failures(self, plugin):
@@ -47,11 +47,11 @@ class TestWsCircuitBreaker:
         plugin._ws_failures = 0
 
         for _ in range(plugin._WS_BREAK_THRESHOLD):
-            assert plugin._ensure_plugin_ws() is False
+            assert plugin._ensure_plugin_ws_locked() is False
 
         # Circuit now open — next call skips immediately without trying connect
         plugin._ws_sync.connect.reset_mock()
-        assert plugin._ensure_plugin_ws() is False
+        assert plugin._ensure_plugin_ws_locked() is False
         plugin._ws_sync.connect.assert_not_called()
         assert plugin._ws_circuit_open_until > 0
 
@@ -66,6 +66,34 @@ class TestWsCircuitBreaker:
         result = plugin._cdp_via_ws({"method": "Runtime.evaluate", "timeout": 5})
         assert result == {"result": {"ok": True}}
         assert plugin._ws_failures == 0
+
+    def test_no_double_connect_under_concurrency(self, plugin):
+        """Two threads racing on a cold WS must not both connect (socket leak)."""
+        import threading
+
+        fake_ws = unittest.mock.MagicMock()
+        fake_ws.recv.return_value = '{"result": {"ok": true}}'
+        plugin._ws_sync = unittest.mock.MagicMock()
+        plugin._ws_sync.connect.return_value = fake_ws
+        plugin._ws_failures = 0
+        plugin._ws_circuit_open_until = 0.0
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def worker():
+            barrier.wait()  # release both threads at once
+            results.append(plugin._cdp_via_ws({"method": "Runtime.evaluate", "timeout": 5}))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(r == {"result": {"ok": True}} for r in results)
+        # The lock guarantees a single connect — a race would call connect twice
+        assert plugin._ws_sync.connect.call_count == 1
 
 
 class TestCdpWsFirst:

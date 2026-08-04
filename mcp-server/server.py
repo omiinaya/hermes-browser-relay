@@ -760,7 +760,7 @@ TOOL_DEFS = {
         },
     },
     "browser_network_requests": {
-        "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting response headers, or debugging network issues.",
+        "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting security-relevant response headers, or debugging network issues. NOTE (v2.5.0): only a whitelist of security-relevant headers is captured (content-type, location, set-cookie, cache-control, auth, CSP, etc.) — arbitrary/custom headers are trimmed for efficiency.",
         "inputSchema": {
             "type": "object",
             "properties": {

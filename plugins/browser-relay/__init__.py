@@ -162,8 +162,13 @@ _WS_BREAK_THRESHOLD = 3
 _WS_RETRY_AFTER = 30.0
 
 
-def _ensure_plugin_ws() -> bool:
-    """Connect or reconnect to the relay's /mcp-ws endpoint (with circuit breaker)."""
+def _ensure_plugin_ws_locked() -> bool:
+    """Connect or reconnect to the relay's /mcp-ws endpoint (with circuit breaker).
+
+    MUST be called with _ws_lock held (the connect, ping, and socket swap are
+    not thread-safe on their own — without the lock two threads can double-
+    connect and leak a socket).
+    """
     global _plugin_ws, _ws_failures, _last_ws_ok, _ws_circuit_open_until
     if _ws_sync is None:
         return False
@@ -203,24 +208,24 @@ def _ensure_plugin_ws() -> bool:
 def _cdp_via_ws(body_dict: dict) -> dict | None:
     """Send CDP command via persistent WebSocket. None on failure → HTTP fallback."""
     global _plugin_ws, _ws_failures, _last_ws_ok, _ws_circuit_open_until
-    if not _ensure_plugin_ws():
-        return None
-    try:
-        with _ws_lock:
-            if _plugin_ws is None:
-                return None
+    with _ws_lock:
+        if not _ensure_plugin_ws_locked():
+            return None
+        if _plugin_ws is None:
+            return None
+        try:
             _plugin_ws.send(json.dumps(body_dict))
             resp = _plugin_ws.recv(timeout=body_dict.get("timeout", TOOL_TIMEOUT) + 5)
-        result = json.loads(resp)
-        _last_ws_ok = time.time()
-        _ws_failures = 0
-        return result
-    except Exception:
-        _plugin_ws = None
-        _ws_failures += 1
-        if _ws_failures >= _WS_BREAK_THRESHOLD:
-            _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
-        return None
+        except Exception:
+            _plugin_ws = None
+            _ws_failures += 1
+            if _ws_failures >= _WS_BREAK_THRESHOLD:
+                _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
+            return None
+    result = json.loads(resp)
+    _last_ws_ok = time.time()
+    _ws_failures = 0
+    return result
 
 
 def _ensure_relay() -> str | None:
@@ -734,7 +739,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "browser_network_requests",
-        "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting response headers, or debugging network issues.",
+        "description": "Query captured network requests from the relay's event buffer. Returns webRequest events (beforeRequest, beforeSendHeaders, headersReceived, completed, error) filtered by type. Useful for checking if a specific request completed, inspecting security-relevant response headers, or debugging network issues. NOTE (v2.5.0): only a whitelist of security-relevant headers is captured (content-type, location, set-cookie, cache-control, auth, CSP, etc.) — arbitrary/custom headers are trimmed for efficiency.",
         "parameters": {
             "type": "object",
             "properties": {
