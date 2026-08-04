@@ -13,6 +13,13 @@
 (function() {
   'use strict';
 
+  // Bail out silently if the extension context is gone — happens when the
+  // extension is reloaded/updated while an old content script is still
+  // injected in an existing tab. chrome.runtime is undefined there.
+  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+    return;
+  }
+
   let hermesReady = false;
 
   // ──────────────────────────────────────────────────────────────────────────
