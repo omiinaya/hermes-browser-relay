@@ -2214,7 +2214,15 @@ class BrowserRelayProvider(MemoryProvider if MemoryProvider is not object else o
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     def shutdown(self) -> None:
-        global _relay_process
+        global _relay_process, _plugin_ws
+        # Close the persistent WS connection (if any) so the relay sees a clean
+        # disconnect instead of a lingering dead socket.
+        if _plugin_ws is not None:
+            try:
+                _plugin_ws.close()
+            except Exception:
+                pass
+            _plugin_ws = None
         if _relay_process is not None:
             try:
                 _relay_process.terminate()
