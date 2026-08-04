@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 make install            # All dependencies (Python + npm)
 ```

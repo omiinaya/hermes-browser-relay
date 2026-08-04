@@ -4,7 +4,7 @@
 
 ```bash
 # 1. Clone and install deps
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 make install          # Installs Python (aiohttp, websockets, Pillow) + npm deps
 

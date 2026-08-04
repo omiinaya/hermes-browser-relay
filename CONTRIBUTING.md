@@ -5,7 +5,7 @@ Thanks for your interest in browser-relay! This guide will help you get started.
 ## Quick Start
 
 ```bash
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 make install
 make test

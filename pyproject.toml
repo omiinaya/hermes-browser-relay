@@ -28,8 +28,8 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 [project.urls]
-Homepage = "https://omiinaya.github.io/browser-relay"
-Repository = "https://github.com/omiinaya/browser-relay"
+Homepage = "https://omiinaya.github.io/hermes-browser-relay"
+Repository = "https://github.com/omiinaya/hermes-browser-relay"
 
 [project.optional-dependencies]
 dev = [

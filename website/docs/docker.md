@@ -1,6 +1,6 @@
 # Docker
 
-A [Dockerfile](https://github.com/omiinaya/browser-relay/blob/master/Dockerfile) is provided for running the relay server in a container. The image uses a two-stage build for a slim runtime image.
+A [Dockerfile](https://github.com/omiinaya/hermes-browser-relay/blob/master/Dockerfile) is provided for running the relay server in a container. The image uses a two-stage build for a slim runtime image.
 
 ## Quick Start
 

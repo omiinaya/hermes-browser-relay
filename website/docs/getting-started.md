@@ -13,7 +13,7 @@ Get browser-relay running in minutes.
 
 ```bash
 # Clone the repo
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 
 # Install dependencies

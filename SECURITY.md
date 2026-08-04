@@ -17,7 +17,7 @@
 
 ## If You Find a Security Issue
 
-This project is experimental. If you discover a vulnerability, please open an issue at https://github.com/omiinaya/browser-relay/issues.
+This project is experimental. If you discover a vulnerability, please open an issue at https://github.com/omiinaya/hermes-browser-relay/issues.
 
 ## Responsible Use
 

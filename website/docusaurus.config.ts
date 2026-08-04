@@ -8,10 +8,10 @@ const config: Config = {
   favicon: 'img/icon128.png',
 
   url: 'https://omiinaya.github.io',
-  baseUrl: '/browser-relay/',
+  baseUrl: '/hermes-browser-relay/',
 
   organizationName: 'omiinaya',
-  projectName: 'browser-relay',
+  projectName: 'hermes-browser-relay',
 
   onBrokenLinks: 'throw',
   markdown: {
@@ -31,7 +31,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/omiinaya/browser-relay/edit/master/website/',
+          editUrl: 'https://github.com/omiinaya/hermes-browser-relay/edit/master/website/',
           routeBasePath: '/',
         },
         blog: false,
@@ -61,7 +61,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/omiinaya/browser-relay',
+          href: 'https://github.com/omiinaya/hermes-browser-relay',
           label: 'GitHub',
           position: 'right',
         },
@@ -83,14 +83,14 @@ const config: Config = {
           title: 'Community',
           items: [
             {label: 'Hermes Agent', href: 'https://hermes-agent.nousresearch.com/'},
-            {label: 'GitHub Issues', href: 'https://github.com/omiinaya/browser-relay/issues'},
+            {label: 'GitHub Issues', href: 'https://github.com/omiinaya/hermes-browser-relay/issues'},
           ],
         },
         {
           title: 'More',
           items: [
             {label: 'Changelog', to: '/changelog'},
-            {label: 'GitHub', href: 'https://github.com/omiinaya/browser-relay'},
+            {label: 'GitHub', href: 'https://github.com/omiinaya/hermes-browser-relay'},
           ],
         },
       ],

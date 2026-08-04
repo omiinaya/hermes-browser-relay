@@ -5,7 +5,7 @@ Thanks for your interest in browser-relay!
 ## Quick Start
 
 ```bash
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 make install
 make test
@@ -36,4 +36,4 @@ make test && make lint-all
 
 ## Questions?
 
-Open an issue at https://github.com/omiinaya/browser-relay/issues.
+Open an issue at https://github.com/omiinaya/hermes-browser-relay/issues.

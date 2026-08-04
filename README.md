@@ -1,17 +1,17 @@
 # browser-relay — Hermes Plugin for Remote Browser Control
 
-[![Tests](https://github.com/omiinaya/browser-relay/actions/workflows/test.yml/badge.svg)](https://github.com/omiinaya/browser-relay/actions)
+[![Tests](https://github.com/omiinaya/hermes-browser-relay/actions/workflows/test.yml/badge.svg)](https://github.com/omiinaya/hermes-browser-relay/actions)
 [![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-123%20passing-success)](https://github.com/omiinaya/browser-relay/actions)
+[![Tests](https://img.shields.io/badge/tests-123%20passing-success)](https://github.com/omiinaya/hermes-browser-relay/actions)
 [![Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
-[![Docs](https://img.shields.io/badge/docs-Docusaurus-3fc3f7?logo=docusaurus&logoColor=white)](https://omiinaya.github.io/browser-relay/)
+[![Docs](https://img.shields.io/badge/docs-Docusaurus-3fc3f7?logo=docusaurus&logoColor=white)](https://omiinaya.github.io/hermes-browser-relay/)
 
 A **Hermes plugin** that gives your AI agent full control of Chrome/Chromium — navigate, click, type, scrape, screenshot, fill forms, and manage tabs. All through a CDP relay server + companion Chrome extension.
 
 ```bash
-hermes plugins install https://github.com/omiinaya/browser-relay
+hermes plugins install https://github.com/omiinaya/hermes-browser-relay
 # Start the relay:
 python3 server.py
 # Load the Chrome extension:
@@ -27,7 +27,7 @@ python3 server.py
 
 ```bash
 # 1. Install the plugin
-git clone https://github.com/omiinaya/browser-relay.git
+git clone https://github.com/omiinaya/hermes-browser-relay.git
 cd browser-relay
 make install           # Python deps + npm
 
@@ -46,7 +46,7 @@ hermes plugins install .
 
 > **Containerized:** A [Dockerfile](Dockerfile) is provided for running the relay server in a container (see [Using Docker](#using-docker)).
 >
-> **📚 Docusaurus docs:** Full documentation at [omiinaya.github.io/browser-relay/](https://omiinaya.github.io/browser-relay/).
+> **📚 Docusaurus docs:** Full documentation at [omiinaya.github.io/browser-relay/](https://omiinaya.github.io/hermes-browser-relay/).
 
 ## Architecture
 

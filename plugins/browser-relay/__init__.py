@@ -24,7 +24,7 @@ Usage:
     3. Use the tools: browser_navigate, browser_eval, browser_click, ...
 
 Quick install:
-    hermes plugins install https://github.com/omiinaya/browser-relay
+    hermes plugins install https://github.com/omiinaya/hermes-browser-relay
     # Start the relay: python3 server.py
     # Then tools appear as: browser_navigate, browser_eval, etc.
 """
@@ -185,7 +185,7 @@ def _ensure_relay() -> str | None:
     if not server_script:
         return (
             "Cannot find server.py to start the CDP relay. "
-            "Install browser-relay from https://github.com/omiinaya/browser-relay "
+            "Install browser-relay from https://github.com/omiinaya/hermes-browser-relay "
             "or start the relay manually: python3 server.py"
         )
 
