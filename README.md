@@ -19,7 +19,7 @@ python3 server.py
 # Now use: browser_navigate, browser_eval, browser_click, ...
 ```
 
-**Version 2.5.0** — **140 tests** (81 Python + 55 JS + 4 E2E), 0 failures. ESLint + ruff clean.
+**Version 2.5.0** — **141 tests** (82 Python + 55 JS + 4 E2E), 0 failures. ESLint + ruff clean.
 
 ---
 
@@ -164,11 +164,11 @@ docker run -d --network=host --name browser-relay browser-relay
 |-------|---------|-------|---------------|
 | Relay server | `make test-python` | 52 | HTTP endpoints, WS, CDP dispatch, event capture, batched disk flush |
 | MCP server | `make test-mcp` | 24 | Tool definitions, handler dispatch, snapshots |
-| Hermes plugin | `make test-plugin` | 5 | Plugin WS transport, circuit breaker, HTTP fallback |
+| Hermes plugin | `make test-plugin` | 6 | Plugin WS transport, circuit breaker, HTTP fallback, concurrency |
 | Extension | `make test-ext` | 55 | background.js, content-script, hermes-helper |
 | E2E | `make test-integration` | 4 | Real Chromium via CDP (requires chromium installed) |
 
-**140 tests, 0 failures** (136 via `make test`, +4 E2E with Chromium). Ruff lint clean, ESLint clean (source files).
+**141 tests, 0 failures** (137 via `make test`, +4 E2E with Chromium). Ruff lint clean, ESLint clean (source files).
 
 ---
 

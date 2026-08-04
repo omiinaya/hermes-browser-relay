@@ -10,7 +10,7 @@
 - **Header whitelist** — security-relevant headers only (was 30 arbitrary per request); dropped unused `requestBody` capture
 - **Bug fix** — relay now forwards `tabId` so multi-tab targeting works
 - **Bug fix** — `make lint-js` no longer scans build artifacts (232 errors eliminated)
-- **139 tests** — 80 Python + 55 JS + 4 E2E, 0 failures
+- **141 tests** — 82 Python + 55 JS + 4 E2E, 0 failures
 
 ## v2.4.2 (2026-07-14)
 

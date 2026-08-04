@@ -12,11 +12,11 @@ make install            # All dependencies (Python + npm)
 
 | Target | Description |
 |--------|-------------|
-| `make test` | Run all non-E2E tests (136 tests) |
-| `make test-all` | Run all tests including E2E (140 tests, requires Chromium) |
+| `make test` | Run all non-E2E tests (137 tests) |
+| `make test-all` | Run all tests including E2E (141 tests, requires Chromium) |
 | `make test-python` | Relay server tests (52) |
 | `make test-mcp` | MCP server tests (24) |
-| `make test-plugin` | Hermes plugin tests (5) |
+| `make test-plugin` | Hermes plugin tests (6) |
 | `make test-ext` | Extension tests (55) |
 | `make test-integration` | E2E tests (4, requires Chromium) |
 | `make lint` | Ruff check (Python) |
