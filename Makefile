@@ -6,7 +6,7 @@ help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-test: test-python test-mcp test-ext  ## Run all non-E2E tests (119 tests)
+test: test-python test-mcp test-plugin test-ext  ## Run all non-E2E tests
 
 test-all: test test-integration  ## Run all tests including E2E (123 tests, requires Chromium)
 
@@ -15,6 +15,9 @@ test-python:  ## Run relay server tests (excluding integration/E2E)
 
 test-mcp:  ## Run MCP server tests
 	.venv/bin/python -m pytest mcp-server/tests/ $(PYTEST_FLAGS)
+
+test-plugin:  ## Run Hermes plugin tests
+	.venv/bin/python -m pytest plugins/browser-relay/tests/ $(PYTEST_FLAGS)
 
 test-integration:  ## Run integration/E2E tests (requires Chromium)
 	.venv/bin/python -m pytest tests/integration/ -v --tb=long

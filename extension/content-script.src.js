@@ -87,20 +87,16 @@
   // Push State Detection
   // ──────────────────────────────────────────────────────────────────────────
   let lastStateKey = '';
-  let pushThrottle = false;
+  let pushTimer = null;
 
   function getStateSnapshot() {
     const h = window.__hermes;
-    if (!h || !h.snapshot) return null;
+    // Use the lightweight state snapshot (~10x cheaper than snapshot(false)):
+    // only counts interactive elements + checks viewport visibility. The full
+    // DOM walk is reserved for actual tool calls, not push-event dedup.
+    if (!h || !h.getStateSnapshot) return null;
     try {
-      const snap = h.snapshot(false);
-      return {
-        visible: snap.info.visible,
-        total: snap.info.total,
-        title: snap.info.title,
-        readyState: document.readyState,
-        url: snap.info.url,
-      };
+      return h.getStateSnapshot();
     } catch (e) {
       return null;
     }
@@ -119,12 +115,16 @@
     }
   }
 
-  // MutationObserver — throttled to every 500ms
+  // MutationObserver — trailing debounce (waits 250ms for mutations to settle
+  // before firing). This is NOT a leading-edge throttle: the old pattern fired
+  // immediately on the first mutation of a burst (mid-render DOM walk) then
+  // blocked 500ms. Debounce delivers the final DOM state, not the first.
   const observer = new MutationObserver(() => {
-    if (pushThrottle) return;
-    pushThrottle = true;
-    setTimeout(() => { pushThrottle = false; }, 500);
-    sendPushEvent('page_updated');
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => {
+      pushTimer = null;
+      sendPushEvent('page_updated');
+    }, 250);
   });
 
   function startObserver() {

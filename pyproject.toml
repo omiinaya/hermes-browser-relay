@@ -1,6 +1,6 @@
 [project]
 name = "browser-relay"
-version = "2.4.2"
+version = "2.5.0"
 description = "Remote Chrome/Chromium browser control via CDP — Hermes plugin and MCP server"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -64,7 +64,20 @@ last_message_time = 0.0
 server_start_time = 0.0
 _heartbeat_task = None
 _stale_sweep_task = None
+_capture_flush_task = None
 _cdp_id_counter = itertools.count()
+
+# Capture disk-write batching: events are appended to _capture_pending and
+# flushed to the JSONL file in batches (every CAPTURE_FLUSH_INTERVAL seconds
+# or when the pending buffer exceeds CAPTURE_FLUSH_MAX). The old code did an
+# open/write/close + stat() rotation check per event — hundreds of file
+# syscalls per second under load, blocking the async event loop.
+_capture_pending = []  # list[dict] awaiting disk flush
+_capture_dropped = 0   # counter for events dropped at the pending cap
+CAPTURE_FLUSH_INTERVAL = 1.0   # seconds between background flushes
+CAPTURE_FLUSH_MAX = 200        # force a flush when this many events queue up
+CAPTURE_PENDING_CAP = 5000     # hard cap — if disk stays down, drop oldest instead of OOM
+MAX_CAPTURE_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Rate limiter state — per-IP token bucket
 _rate_limiters = {}  # ip -> {"tokens": float, "last_refill": float}
@@ -143,22 +156,43 @@ async def stale_request_sweep():
                 log.warning(f"Swept stale pending request {cdp_id} ({STALE_REQUEST_TIMEOUT}s)")
 
 
+def _flush_capture() -> None:
+    """Write pending events to the capture file in one batch (rotation-checked)."""
+    global _capture_pending
+    if not _capture_pending:
+        return
+    batch = _capture_pending
+    _capture_pending = []
+    try:
+        # Rotate if file exceeds 10MB (checked once per flush, not per event)
+        if CAPTURE_FILE.exists() and CAPTURE_FILE.stat().st_size > MAX_CAPTURE_SIZE:
+            rotated = CAPTURE_FILE.with_suffix(".jsonl.1")
+            rotated.unlink(missing_ok=True)
+            CAPTURE_FILE.rename(rotated)
+            log.info(f"Rotated capture file: {CAPTURE_FILE.name} -> {rotated.name}")
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CAPTURE_FILE, "a") as f:
+            for data in batch:
+                f.write(json.dumps(data, default=str) + "\n")
+    except Exception:
+        log.exception("Capture flush failed")
+        # Re-queue on failure so events aren't silently dropped
+        _capture_pending = batch + _capture_pending
+
+
+async def capture_flush_loop() -> None:
+    """Background task: flush pending capture events to disk periodically."""
+    while True:
+        await asyncio.sleep(CAPTURE_FLUSH_INTERVAL)
+        _flush_capture()
+
+
 def _capture_event(data: dict) -> None:
-    """Write event to capture file and in-memory buffer."""
+    """Buffer event in memory and queue it for batched disk write."""
+    global _capture_dropped
     if "ts" not in data:
         data["_received"] = time.time() * 1000
-    # Rotate if file exceeds 10MB
-    MAX_CAPTURE_SIZE = 10 * 1024 * 1024  # 10MB
-    if CAPTURE_FILE.exists() and CAPTURE_FILE.stat().st_size > MAX_CAPTURE_SIZE:
-        rotated = CAPTURE_FILE.with_suffix(".jsonl.1")
-        rotated.unlink(missing_ok=True)
-        CAPTURE_FILE.rename(rotated)
-        log.info(f"Rotated capture file: {CAPTURE_FILE.name} -> {rotated.name}")
-    # Write to file
-    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CAPTURE_FILE, "a") as f:
-        f.write(json.dumps(data, default=str) + "\n")
-    # Push to buffers
+    # Push to buffers (fast, in-memory)
     _event_buffer.append(data)
     msg_type = data.get("type", "")
     if msg_type in ("tab", "download", "response_body"):
@@ -167,6 +201,17 @@ def _capture_event(data: dict) -> None:
         _nav_buffer.append(data)
     elif msg_type == "event" and data.get("method") in INTERESTING_CDP_EVENTS:
         _nav_buffer.append(data)
+    # Queue for disk write (batched)
+    if len(_capture_pending) < CAPTURE_PENDING_CAP:
+        _capture_pending.append(data)
+    else:
+        # Hard cap reached (disk down long enough to back up) — drop the oldest
+        # pending event and count it, so we don't unboundedly grow memory.
+        _capture_pending.pop(0)
+        _capture_pending.append(data)
+        _capture_dropped += 1
+    if len(_capture_pending) >= CAPTURE_FLUSH_MAX:
+        _flush_capture()
 
 
 async def handle_extension(request):
@@ -246,6 +291,13 @@ async def handle_extension(request):
                 if msg_type == "batch":
                     for evt in data.get("events", []):
                         _capture_event(evt)
+                        # Forward to event subscribers with isolation (same as
+                        # the per-event paths — SSE /events and /wait-nav rely on it)
+                        for cb in list(event_subscribers):
+                            try:
+                                cb(evt)
+                            except Exception:
+                                log.exception("Event subscriber error")
                     continue
 
                 if msg_id and msg_id in pending_requests:
@@ -310,8 +362,10 @@ async def _execute_cdp_raw(body: dict) -> dict:
 
     # Send CDP command via extension
     cmd = {"id": cdp_id, "method": method, "params": params}
-    # Preserve _hermes routing fields and other extras
-    for extra_key in ("_hermes", "_hermesFunc", "_hermesArgs"):
+    # Preserve _hermes routing fields and other extras (incl. tabId for
+    # multi-tab targeting — without this, commands always hit the first
+    # attachment)
+    for extra_key in ("_hermes", "_hermesFunc", "_hermesArgs", "tabId"):
         if extra_key in body:
             cmd[extra_key] = body[extra_key]
     try:
@@ -418,6 +472,8 @@ async def handle_status(request):
             "tab_id": tab_id,
             "extension_info": extension_info,
             "pending_requests": len(pending_requests),
+            "capture_pending": len(_capture_pending),
+            "capture_dropped": _capture_dropped,
             "uptime": uptime,
             "uptime_str": f"{uptime:.0f}s",
             "last_message_ago": (now - last_message_time) if last_message_time > 0 else None,
@@ -875,22 +931,24 @@ async def shutdown():
     """Clean shutdown — dump buffer, close WS, cancel pending, stop background tasks."""
     log.info("Shutting down...")
 
-    # Dump in-memory event buffer to JSONL file before shutdown
-    if _event_buffer:
+    # Flush any pending capture events to the JSONL file (events already written
+    # by the batched flusher are NOT re-dumped — that would duplicate them).
+    if _capture_pending:
+        _pending_count = len(_capture_pending)
         try:
-            CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-            with open(CAPTURE_FILE, "a") as f:
-                for evt in _event_buffer:
-                    f.write(json.dumps(evt, default=str) + "\n")
-            log.info(f"Dumped {len(_event_buffer)} buffered events to {CAPTURE_FILE}")
+            _flush_capture()
+            log.info(f"Flushed {_pending_count} pending events on shutdown")
         except Exception:
-            log.exception("Failed to dump event buffer on shutdown")
+            log.exception("Failed to flush pending events on shutdown")
 
     if _heartbeat_task and not _heartbeat_task.done():
         _heartbeat_task.cancel()
 
     if _stale_sweep_task and not _stale_sweep_task.done():
         _stale_sweep_task.cancel()
+
+    if _capture_flush_task and not _capture_flush_task.done():
+        _capture_flush_task.cancel()
 
     ws = extension_ws
     if ws and not ws.closed:
@@ -979,6 +1037,7 @@ async def main():
     # Start background tasks
     _heartbeat_task = asyncio.create_task(heartbeat_loop())
     _stale_sweep_task = asyncio.create_task(stale_request_sweep())
+    _capture_flush_task = asyncio.create_task(capture_flush_loop())
 
     # Set up signal handlers for graceful shutdown
     stop_event = asyncio.Event()

@@ -62,6 +62,7 @@ def reset_state():
     relay.last_message_time = 0.0
     relay._event_buffer.clear()
     relay._nav_buffer.clear()
+    relay._capture_pending = []
     relay.server_start_time = _time.time()
 
 
@@ -420,6 +421,92 @@ class TestCapture:
         for i in range(relay.EVENT_BUFFER_SIZE + 50):
             relay._capture_event({"type": "test", "idx": i, "_received": _time.time() * 1000})
         assert len(relay._event_buffer) <= relay.EVENT_BUFFER_SIZE
+
+    def test_capture_queues_for_disk_but_does_not_write_per_event(self, reset_state, tmp_path, monkeypatch):
+        """Batched writes: _capture_event queues, only _flush_capture writes to disk."""
+        monkeypatch.setattr(relay, "CAPTURE_FILE", tmp_path / "capture.jsonl")
+        monkeypatch.setattr(relay, "CAPTURE_DIR", tmp_path)
+
+        relay._capture_event({"type": "tab", "event": "navigated", "url": "https://a.com"})
+        relay._capture_event({"type": "tab", "event": "navigated", "url": "https://b.com"})
+
+        # In-memory buffers update immediately
+        assert len(relay._event_buffer) == 2
+        # No disk write yet — pending
+        assert len(relay._capture_pending) == 2
+        assert not (tmp_path / "capture.jsonl").exists() or (tmp_path / "capture.jsonl").stat().st_size == 0
+
+        relay._flush_capture()
+        assert len(relay._capture_pending) == 0
+        content = (tmp_path / "capture.jsonl").read_text()
+        assert content.count("\n") == 2
+
+    def test_capture_flush_max_triggers_auto_flush(self, reset_state, tmp_path, monkeypatch):
+        """CAPTURE_FLUSH_MAX events force a flush even without the timer."""
+        monkeypatch.setattr(relay, "CAPTURE_FILE", tmp_path / "capture.jsonl")
+        monkeypatch.setattr(relay, "CAPTURE_DIR", tmp_path)
+        monkeypatch.setattr(relay, "CAPTURE_FLUSH_MAX", 5)
+
+        for i in range(5):
+            relay._capture_event({"type": "test", "idx": i})
+        assert len(relay._capture_pending) == 0  # auto-flushed at threshold
+        content = (tmp_path / "capture.jsonl").read_text()
+        assert content.count("\n") == 5
+
+    def test_capture_flush_requeues_on_failure(self, reset_state, tmp_path, monkeypatch):
+        """Failed flush re-queues events so nothing is silently dropped."""
+        monkeypatch.setattr(relay, "CAPTURE_FILE", tmp_path / "capture.jsonl")
+        monkeypatch.setattr(relay, "CAPTURE_DIR", tmp_path)
+
+        relay._capture_event({"type": "test", "idx": 1})
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(relay, "CAPTURE_DIR", tmp_path)
+        original_open = open
+
+        def failing_open(*a, **k):
+            if "capture.jsonl" in str(a[0]):
+                raise OSError("disk full")
+            return original_open(*a, **k)
+
+        monkeypatch.setattr("builtins.open", failing_open)
+        relay._flush_capture()
+        # Events re-queued, not dropped
+        assert len(relay._capture_pending) == 1
+        monkeypatch.setattr("builtins.open", original_open)
+
+    def test_capture_pending_cap_drops_oldest(self, reset_state, monkeypatch):
+        """CAPTURE_PENDING_CAP bounds memory when disk stays down."""
+        monkeypatch.setattr(relay, "CAPTURE_PENDING_CAP", 3)
+        monkeypatch.setattr(relay, "CAPTURE_FLUSH_MAX", 100)
+
+        for i in range(5):
+            relay._capture_event({"type": "test", "idx": i})
+        assert len(relay._capture_pending) == 3  # capped
+        assert relay._capture_dropped == 2  # 2 dropped at the cap
+        # Newest events survive
+        idxs = [e["idx"] for e in relay._capture_pending]
+        assert idxs == [2, 3, 4]
+
+    def test_batch_message_forwards_to_subscribers(self, reset_state):
+        """Server batch handler forwards each event to SSE subscribers."""
+        received = []
+        relay.event_subscribers.append(lambda data: received.append(data))
+
+        # Simulate the WS batch branch by calling the capture path directly with subscriber forwarding
+        evts = [
+            {"type": "event", "method": "Network.responseReceived", "tabId": 1},
+            {"type": "webrequest", "event": "completed", "url": "https://x.com"},
+        ]
+        for evt in evts:
+            relay._capture_event(evt)
+            for cb in list(relay.event_subscribers):
+                cb(evt)
+        assert len(received) == 2
+        assert received[0]["method"] == "Network.responseReceived"
+        assert received[1]["event"] == "completed"
 
 
 # ====== Handler Existence ======

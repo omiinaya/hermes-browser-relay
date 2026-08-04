@@ -51,11 +51,12 @@ python3 -m mcp-server.server   # Optional: MCP stdio server
 
 ```bash
 make install        # All deps
-make test-python    # Relay tests (47)
+make test-python    # Relay tests (51)
 make test-mcp       # MCP tests (24)
-make test-ext       # Extension tests (48)
-make test           # All of the above (119 tests)
-make test-all       # All including E2E (123 tests, requires Chromium)
+make test-plugin    # Plugin tests (5)
+make test-ext       # Extension tests (55)
+make test           # All of the above (135 tests)
+make test-all       # All including E2E (139 tests, requires Chromium)
 make test-integration  # E2E tests (4, requires Chromium)
 make lint           # ruff check
 npm run lint        # ESLint

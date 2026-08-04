@@ -1,5 +1,5 @@
 name: browser-relay
-version: 2.4.2
+version: 2.5.0
 description: "Remote browser control for Hermes Agent — 46 CDP tools: navigate, eval, click, type, snapshot, screenshot, scroll, fill, multi-tab, and more. Requires Chromium/Chrome with the companion extension."
 pip_dependencies:
   - aiohttp

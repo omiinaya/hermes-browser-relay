@@ -38,6 +38,69 @@ function safeSend(data) {
   return false;
 }
 
+// ====== Client-side Event Batching ======
+// High-volume streams (CDP events, webRequest) are buffered here and flushed
+// as a single type:"batch" message every BATCH_FLUSH_MS. Command responses
+// (id-bearing) are NOT batched — they resolve pending CDP futures immediately.
+const BATCH_FLUSH_MS = 100;
+let _pendingBatch = [];
+let _batchTimer = null;
+
+function queueEvent(msg) {
+  _pendingBatch.push(msg);
+  if (_batchTimer) return;
+  _batchTimer = setTimeout(() => {
+    _batchTimer = null;
+    if (_pendingBatch.length === 0) return;
+    const batch = _pendingBatch;
+    _pendingBatch = [];
+    safeSend({ type: 'batch', events: batch });
+  }, BATCH_FLUSH_MS);
+}
+
+// ====== CDP Event Whitelist ======
+// Only these CDP methods are forwarded to the relay. Everything else is dropped
+// at the source — the single biggest traffic reducer (per-request Network noise,
+// WebSocket frames, Debugger/DOM/CSS internals never leave the browser).
+// The relay keeps Network.responseReceived in the nav buffer; browser_console
+// consumes Runtime.consoleAPICalled. Add methods here if a new tool needs them.
+const FORWARDED_CDP_EVENTS = new Set([
+  'Network.responseReceived',
+  'Runtime.consoleAPICalled',
+  'Runtime.exceptionThrown',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.loadEventFired',
+  'Page.domContentEventFired',
+  'Page.javascriptDialogOpening',
+  'Page.javascriptDialogClosed',
+  'Page.downloadWillBegin',
+  'Page.downloadProgress',
+  'Network.webSocketCreated',
+]);
+
+// ====== Header Whitelist ======
+// webRequest events carry up to dozens of headers; the relay consumers only
+// need a small security-relevant subset. Sending 30 arbitrary headers per
+// request wasted significant WS + disk bandwidth.
+const INTERESTING_HEADERS = new Set([
+  'content-type', 'content-length', 'location', 'set-cookie', 'cache-control',
+  'authorization', 'cookie', 'x-requested-with', 'x-csrf-token', 'etag',
+  'last-modified', 'x-frame-options', 'content-security-policy', 'referrer-policy',
+]);
+
+function pickHeaders(headers) {
+  if (!headers) return undefined;
+  const out = [];
+  for (const h of headers) {
+    if (INTERESTING_HEADERS.has((h.name || '').toLowerCase())) {
+      out.push(h);
+      if (out.length >= 20) break;
+    }
+  }
+  return out;
+}
+
 // ====== CDP Event Listeners ======
 
 const bodyCapturePatterns = [
@@ -73,14 +136,8 @@ setInterval(() => {
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Forward event as-is
-  safeSend({
-    type: 'event',
-    method: method,
-    params: params,
-    tabId: source.tabId,
-  });
-
+  // ── Internal body-capture bookkeeping (ALWAYS runs, independent of
+  //    forwarding — the response_body tool depends on it) ──
   if (method === 'Network.responseReceived' && params && params.requestId) {
     const resp = params.response || {};
     const url = resp.url || '';
@@ -119,6 +176,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       }
     }
   }
+
+  // ── Forwarding (whitelisted methods only, batched) ──
+  if (!FORWARDED_CDP_EVENTS.has(method)) return;
+  queueEvent({
+    type: 'event',
+    method: method,
+    params: params,
+    tabId: source.tabId,
+  });
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
@@ -194,7 +260,7 @@ async function getBlockingRules() {
 
 function sendWebRequest(type, details) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  safeSend({
+  queueEvent({
     type: 'webrequest',
     event: type,
     tabId: details.tabId,
@@ -206,15 +272,14 @@ function sendWebRequest(type, details) {
     resourceType: details.type,
     ip: details.ip,
     timeStamp: details.timeStamp,
-    responseHeaders: details.responseHeaders ? details.responseHeaders.slice(0, 30) : undefined,
-    requestHeaders: details.requestHeaders ? details.requestHeaders.slice(0, 30) : undefined,
+    responseHeaders: pickHeaders(details.responseHeaders),
+    requestHeaders: pickHeaders(details.requestHeaders),
   });
 }
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => { sendWebRequest('beforeRequest', details); return; },
-  { urls: ['<all_urls>'] },
-  ['requestBody']
+  { urls: ['<all_urls>'] }
 );
 
 chrome.webRequest.onBeforeSendHeaders.addListener(
@@ -320,6 +385,10 @@ function connectWS() {
     lastServerMessageTime = null;
     updateBadge();
     ws = null;
+    // Drop any unsent batched events — the connection is gone and they'd
+    // otherwise linger forever until the next queueEvent cycle.
+    _pendingBatch = [];
+    if (_batchTimer) { clearTimeout(_batchTimer); _batchTimer = null; }
     stopClientHeartbeat();
 
     // Exponential backoff reconnect

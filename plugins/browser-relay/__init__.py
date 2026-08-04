@@ -144,6 +144,84 @@ def _hermes_call(func_name: str, *args, fallback: str = None) -> dict:
 
 _relay_process = None
 
+# Persistent WebSocket to the relay's /mcp-ws endpoint (same pattern as the
+# MCP server). Eliminates HTTP POST overhead per tool call. Circuit breaker:
+# 3 consecutive failures → skip WS attempts for 30s so a dead connection never
+# blocks a tool call (falls back to HTTP POST).
+try:
+    import websockets.sync.client as _ws_sync  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    _ws_sync = None
+
+_plugin_ws = None
+_ws_failures = 0
+_last_ws_ok = 0.0
+_ws_circuit_open_until = 0.0
+_ws_lock = threading.Lock()  # serialize WS send/recv across plugin tool-call threads
+_WS_BREAK_THRESHOLD = 3
+_WS_RETRY_AFTER = 30.0
+
+
+def _ensure_plugin_ws() -> bool:
+    """Connect or reconnect to the relay's /mcp-ws endpoint (with circuit breaker)."""
+    global _plugin_ws, _ws_failures, _last_ws_ok, _ws_circuit_open_until
+    if _ws_sync is None:
+        return False
+    now = time.time()
+
+    # Circuit breaker: skip WS if it's been failing repeatedly
+    if _ws_circuit_open_until > now:
+        return False
+
+    if _plugin_ws is not None:
+        # Only ping if > 10s since last success — avoids 5s timeout on dead conn
+        if _last_ws_ok > 0 and now - _last_ws_ok < 10.0:
+            return True
+        try:
+            _plugin_ws.ping(timeout=1)
+            _last_ws_ok = now
+            _ws_failures = 0
+            return True
+        except Exception:
+            _plugin_ws = None
+
+    try:
+        ws_url = CDP_SERVER.replace("http://", "ws://").replace("https://", "wss://") + "/mcp-ws"
+        _plugin_ws = _ws_sync.connect(ws_url, open_timeout=3)
+        _last_ws_ok = time.time()
+        _ws_failures = 0
+        _ws_circuit_open_until = 0.0
+        return True
+    except Exception:
+        _plugin_ws = None
+        _ws_failures += 1
+        if _ws_failures >= _WS_BREAK_THRESHOLD:
+            _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
+        return False
+
+
+def _cdp_via_ws(body_dict: dict) -> dict | None:
+    """Send CDP command via persistent WebSocket. None on failure → HTTP fallback."""
+    global _plugin_ws, _ws_failures, _last_ws_ok, _ws_circuit_open_until
+    if not _ensure_plugin_ws():
+        return None
+    try:
+        with _ws_lock:
+            if _plugin_ws is None:
+                return None
+            _plugin_ws.send(json.dumps(body_dict))
+            resp = _plugin_ws.recv(timeout=body_dict.get("timeout", TOOL_TIMEOUT) + 5)
+        result = json.loads(resp)
+        _last_ws_ok = time.time()
+        _ws_failures = 0
+        return result
+    except Exception:
+        _plugin_ws = None
+        _ws_failures += 1
+        if _ws_failures >= _WS_BREAK_THRESHOLD:
+            _ws_circuit_open_until = time.time() + _WS_RETRY_AFTER
+        return None
+
 
 def _ensure_relay() -> str | None:
     """Start the CDP relay server if it's not already running.
@@ -229,6 +307,12 @@ def _cdp(method: str, params: dict | None = None, timeout: int = TOOL_TIMEOUT, *
         body_dict[k] = v
     if getattr(_thread_local, 'tab_id', None) is not None:
         body_dict["tabId"] = _thread_local.tab_id
+
+    # Try persistent WebSocket first (no HTTP POST overhead)
+    ws_result = _cdp_via_ws(body_dict)
+    if ws_result is not None:
+        return ws_result
+
     body = json.dumps(body_dict).encode()
     req = urllib.request.Request(f"{CDP_SERVER}/cdp", data=body, method="POST")
     try:

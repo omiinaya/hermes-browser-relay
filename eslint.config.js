@@ -4,7 +4,7 @@ import js from "@eslint/js";
 
 export default defineConfig([
   { files: ["**/*.{js,mjs,cjs}"] },
-  { ignores: ["**/*.min.js", "extension/content-script.js"] },
+  { ignores: ["**/*.min.js", "extension/content-script.js", "website/build/**", "website/.docusaurus/**", ".venv/**", "node_modules/**"] },
   {
     files: ["**/*.{js,mjs,cjs}"],
     languageOptions: {

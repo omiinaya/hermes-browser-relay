@@ -1,5 +1,44 @@
 # Changelog
 
+## v2.5.0 (2026-08-04)
+
+### Performance (faster, smoother, more efficient as a Hermes plugin)
+
+- **Content script push events now use the lightweight `__hermes.getStateSnapshot()`** (~10x cheaper) instead of the full `snapshot(false)` DOM walk. Every MutationObserver batch previously re-walked the entire shadow DOM with per-element `getBoundingClientRect` — on heavy pages this ran continuously in the page's main thread.
+- **MutationObserver is now a true 250ms trailing debounce** (was a leading-edge 500ms throttle that fired mid-render then blocked). Delivers the final DOM state, not the first — fewer push events on SPA navigations and dynamic pages.
+- **Client-side event batching in the extension** — CDP events + webRequest messages are buffered and flushed as one `type:"batch"` WS message every 100ms instead of one message per event. Command responses are never batched (they resolve pending futures immediately).
+- **CDP event whitelist at the source** — the extension only forwards 12 interesting CDP methods (navigation lifecycle, console, dialogs, downloads, `Network.responseReceived`, WebSocket presence). Per-request noise (`Network.requestWillBeSent`, `loadingFinished`, WS frames, Debugger/DOM/CSS internals) never leaves the browser.
+- **Relay capture writes are now batched** — `_capture_event` queues events in memory; a background flusher writes to `capture.jsonl` every 1s (or at 200 pending events) instead of an open/write/close + `stat()` rotation check per event. Shutdown flushes remaining pending events exactly once (previously the shutdown dump duplicated already-written events).
+- **Hermes plugin now uses a persistent WebSocket to the relay** (`/mcp-ws`) with a circuit breaker, mirroring the MCP server — eliminates HTTP POST overhead per tool call. Falls back to HTTP POST automatically on failure. Requires the `websockets` package (already listed in `plugin.yaml`/`pyproject.toml`).
+- **Dropped unused `['requestBody']`** from the webRequest `onBeforeRequest` listener — Chrome was buffering the body of every request on every tab, and the body was never read.
+- **Header whitelist trimming** — `sendWebRequest` now sends only security-relevant headers (content-type, set-cookie, location, auth, CSP, etc., max 20) instead of up to 30 arbitrary headers per request.
+
+### Fixed
+
+- **Relay dropped `tabId` when forwarding commands to the extension** — with multiple tabs attached, every command silently hit the first attachment. `_execute_cdp_raw` now forwards `tabId` so per-tab targeting works (regression from the MCP/plugin `tab_id` injection feature).
+- **`make lint-js` was broken** — ESLint scanned Docusaurus build artifacts (`website/build/`, `website/.docusaurus/`) and `.venv/` site-packages, producing 232 errors in generated/minified JS. Added ignores; lint-js now passes (20 pre-existing warnings in test files only).
+- **`make test` missed the plugin tests** — new `test-plugin` target added; `make test` now runs all four suites.
+
+### Changed
+
+- Version bump to 2.5.0 — all versioned files in sync.
+
+## v2.4.2 (2026-07-20)
+
+- Version sync hardening: `make check-version` validates all 7 versioned files; `make update-version` covers `pyproject.toml`, `popup.html`, `AGENTS.md`.
+- Thread-safe `_shared_tab_id` (threading.local) — eliminates race under parallel tool calls.
+- MCP server auto-starts relay; plugin shutdown kills relay with grace.
+- Capture file rotation (10MB); CORS middleware; rate limiting (30 req/s, burst 50); `py.typed`; SECURITY.md.
+- cdp.py CLI expanded to 40+ commands; Makefile full targets; CI 4 jobs; pre-commit enforced.
+- Extension orphaned content-script guard (chrome.runtime undefined bail-out).
+- Known technical debt resolved to near-zero (see `references/technical-debt.md`).
+
+## v2.4.1 (2026-07-14)
+
+- Production hardening — 18 fixes across relay, MCP, plugin, extension (see git log `dc130a9`).
+- Fixed hardcoded URL bugs in `_ensure_relay()` (3 components used 127.0.0.1:9223 instead of configured `CDP_SERVER`).
+- Popup version synced; CONTRIBUTING.md; `.editorconfig`; `make lint-js` + `lint-all` targets.
+
 ## v2.4.0 (2026-07-13)
 
 ### Fixed

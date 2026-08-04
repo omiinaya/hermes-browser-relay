@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "100",
   "name": "CDP Bridge",
-  "version": "2.4.2",
+  "version": "2.5.0",
   "description": "Bridges Chrome DevTools Protocol to Hermes Agent via WebSocket — navigate, inspect, scrape with full network visibility",
   "permissions": [
     "debugger",

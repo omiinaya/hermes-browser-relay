@@ -42,6 +42,9 @@ before(() => {
     this.safeSend = safeSend;
     this.updateBadge = updateBadge;
     this.shouldCaptureBody = shouldCaptureBody;
+    this.queueEvent = queueEvent;
+    this.pickHeaders = pickHeaders;
+    this.FORWARDED_CDP_EVENTS = FORWARDED_CDP_EVENTS;
     this.loadServerUrl = loadServerUrl;
     this.saveServerUrl = saveServerUrl;
     this.startReattachWatcher = startReattachWatcher;
@@ -89,6 +92,9 @@ before(() => {
     safeSend: globalThis.safeSend,
     updateBadge: globalThis.updateBadge,
     shouldCaptureBody: globalThis.shouldCaptureBody,
+    queueEvent: globalThis.queueEvent,
+    pickHeaders: globalThis.pickHeaders,
+    FORWARDED_CDP_EVENTS: globalThis.FORWARDED_CDP_EVENTS,
     loadServerUrl: globalThis.loadServerUrl,
     saveServerUrl: globalThis.saveServerUrl,
     startReattachWatcher: globalThis.startReattachWatcher,
@@ -387,5 +393,120 @@ describe('loadServerUrl / saveServerUrl', () => {
       background.loadServerUrl(); // reads from sync storage, sets SERVER_URL
       assert.equal(globalThis.SERVER_URL, 'ws://127.0.0.1:9223/ws');
     });
+  });
+});
+
+// ======================================================================
+// Event Batching Tests
+// ======================================================================
+
+describe('queueEvent (client-side batching)', () => {
+  it('should batch events into a single type:"batch" message', () => {
+    // Use mock timers to advance past BATCH_FLUSH_MS deterministically
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const sent = [];
+      globalThis.ws = {
+        readyState: 1, // OPEN
+        send: (data) => { sent.push(data); },
+      };
+
+      background.queueEvent({ type: 'event', method: 'Network.responseReceived', tabId: 1 });
+      background.queueEvent({ type: 'webrequest', event: 'completed', url: 'https://x.com' });
+      assert.equal(sent.length, 0, 'nothing sent before flush');
+
+      mock.timers.tick(150); // past BATCH_FLUSH_MS
+      assert.equal(sent.length, 1, 'one batched message after flush');
+      const parsed = JSON.parse(sent[0]);
+      assert.equal(parsed.type, 'batch');
+      assert.equal(parsed.events.length, 2, 'both events in one batch');
+      assert.equal(parsed.events[0].method, 'Network.responseReceived');
+      assert.equal(parsed.events[1].event, 'completed');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('should coalesce bursts into a single batch (trailing timer)', () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const sent = [];
+      globalThis.ws = {
+        readyState: 1,
+        send: (data) => { sent.push(data); },
+      };
+
+      // Burst: events keep arriving before the timer fires
+      background.queueEvent({ type: 'event', method: 'A' });
+      mock.timers.tick(30);
+      background.queueEvent({ type: 'event', method: 'B' });
+      mock.timers.tick(30);
+      background.queueEvent({ type: 'event', method: 'C' });
+      assert.equal(sent.length, 0);
+      mock.timers.tick(60); // now past 100ms since first queue
+      assert.equal(sent.length, 1);
+      assert.equal(JSON.parse(sent[0]).events.length, 3);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+// ======================================================================
+// Header Whitelist Tests
+// ======================================================================
+
+describe('pickHeaders (header whitelist)', () => {
+  it('should keep only interesting headers', () => {
+    const headers = [
+      { name: 'Content-Type', value: 'application/json' },
+      { name: 'Set-Cookie', value: 'session=abc' },
+      { name: 'X-Random-Noise', value: 'aaa' },
+      { name: 'Server', value: 'nginx' },
+      { name: 'Location', value: 'https://redirect' },
+    ];
+    const picked = background.pickHeaders(headers);
+    const names = picked.map(h => h.name.toLowerCase());
+    assert.ok(names.includes('content-type'));
+    assert.ok(names.includes('set-cookie'));
+    assert.ok(names.includes('location'));
+    assert.ok(!names.includes('x-random-noise'));
+    assert.ok(!names.includes('server'));
+  });
+
+  it('should return undefined for missing headers', () => {
+    assert.equal(background.pickHeaders(undefined), undefined);
+    assert.equal(background.pickHeaders(null), undefined);
+  });
+
+  it('should cap at 20 headers', () => {
+    const headers = [];
+    for (let i = 0; i < 50; i++) {
+      headers.push({ name: `Content-Type-${i}`, value: 'x' }); // not interesting
+    }
+    // none interesting → empty array
+    assert.deepEqual(background.pickHeaders(headers), []);
+  });
+});
+
+// ======================================================================
+// CDP Event Whitelist Tests
+// ======================================================================
+
+describe('FORWARDED_CDP_EVENTS', () => {
+  it('should include events consumed by relay tools', () => {
+    assert.ok(background.FORWARDED_CDP_EVENTS.has('Network.responseReceived'),
+      'nav buffer relies on responseReceived');
+    assert.ok(background.FORWARDED_CDP_EVENTS.has('Runtime.consoleAPICalled'),
+      'browser_console relies on consoleAPICalled');
+  });
+
+  it('should exclude high-volume noise events', () => {
+    assert.ok(!background.FORWARDED_CDP_EVENTS.has('Network.requestWillBeSent'),
+      'per-request noise should not be forwarded');
+    assert.ok(!background.FORWARDED_CDP_EVENTS.has('Network.loadingFinished'),
+      'loadingFinished is internal-only for body capture');
+    assert.ok(!background.FORWARDED_CDP_EVENTS.has('Network.webSocketFrameReceived'),
+      'WS frame spam should not be forwarded');
   });
 });
